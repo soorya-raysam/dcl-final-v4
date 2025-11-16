@@ -1,0 +1,66 @@
+               Voice System name: HYD_CM - TRUNK GROUP STATUS                   
+                                                                                
+Member    Port    Service State      Mtce Connected Ports                       
+                                     Busy                                       
+                                                                                
+0005/0001 012V201 in-service/idle    no                                         
+0005/0002 012V202 in-service/idle    no                                         
+0005/0003 012V203 in-service/idle    no                                         
+0005/0004 012V204 in-service/idle    no                                         
+0005/0005 012V205 in-service/idle    no                                         
+0005/0006 012V206 in-service/idle    no                                         
+0005/0007 012V207 in-service/idle    no                                         
+0005/0008 012V208 in-service/idle    no                                         
+0005/0009 012V209 in-service/idle    no                                         
+0005/0010 012V210 in-service/idle    no                                         
+0005/0011 012V211 in-service/idle    no                                         
+0005/0012 012V212 in-service/idle    no                                         
+0005/0013 012V213 in-service/idle    no                                         
+0005/0014 012V214 in-service/idle    no                                         
+                                                                                
+                                                                                
+                                                                                
+                             TRUNK GROUP STATUS                                 
+                                                                                
+Member    Port    Service State      Mtce Connected Ports                       
+                                     Busy                                       
+                                                                                
+0005/0015 012V215 in-service/idle    no                                         
+0005/0016 012V217 in-service/idle    no                                         
+0005/0017 012V218 in-service/idle    no                                         
+0005/0018 012V219 in-service/idle    no                                         
+0005/0019 012V220 in-service/idle    no                                         
+0005/0020 012V221 in-service/idle    no                                         
+0005/0021 012V222 in-service/idle    no                                         
+0005/0022 012V223 in-service/idle    no                                         
+0005/0023 012V224 in-service/idle    no                                         
+0005/0024 012V225 in-service/idle    no                                         
+0005/0025 012V226 in-service/idle    no                                         
+0005/0026 012V227 in-service/idle    no                                         
+0005/0027 012V228 in-service/idle    no                                         
+0005/0028 012V229 in-service/idle    no                                         
+                                                                                
+                                                                                
+                                                                                
+                             TRUNK GROUP STATUS                                 
+                                                                                
+Member    Port    Service State      Mtce Connected Ports                       
+                                     Busy                                       
+                                                                                
+0005/0029 012V230 in-service/idle    no                                         
+0005/0030 012V231 in-service/idle    no                                         
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                

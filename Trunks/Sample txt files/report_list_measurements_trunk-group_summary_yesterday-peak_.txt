@@ -1,0 +1,132 @@
+             TechMahindra Hyd                 Date: 4:24 am  TUE JUL 15, 2025   
+                                                                                
+                    TRUNK GROUP SUMMARY REPORT                                  
+                                                                                
+                Peak Hour For All Trunk Groups: 1000                            
+                                                                            %   
+Grp  Grp  Grp  Grp Meas Total Total Inc.   Grp   Que Call Que  Que  Out   %  Out
+No.  Siz  Type Dir Hour Usage Seize Seize  Ovfl  Siz Qued Ovf  Abd  Srv  ATB Blk
+                                                                                
+5    30   isdn two 100  29   17     14     0     0   0    0    0    0    0   0  
+9    30   isdn two 1000 50   94     0      0     0   0    0    0    0    0   0  
+10   30   isdn two 300  7    7      7      0     0   0    0    0    0    0   0  
+21   30   isdn two 2300 0    0      0      0     15  0    0    0    0    0   0  
+27   30   isdn two 1600 16   7      4      0     0   0    0    0    0    1   0  
+36   30   isdn two 1100 18   1      1      0     0   0    0    0    0    0   0  
+38   30   isdn two 2300 0    0      0      0     0   0    0    0    0    0   0  
+39   30   isdn two 700  53   22     22     0     0   0    0    0    0    0   0  
+92   200  sip  two 2300 0    0      0      0     0   0    0    0    200  100 0  
+93   200  sip  two 2300 0    0      0      0     0   0    0    0    200  100 0  
+                                                                                
+                                                                                
+                                                                                
+Switch Name: TechMahindra Hyd                 Date: 4:24 am  TUE JUL 15, 2025   
+                                                                                
+                    TRUNK GROUP SUMMARY REPORT                                  
+                                                                                
+                Peak Hour For All Trunk Groups: 1000                            
+                                                                            %   
+Grp  Grp  Grp  Grp Meas Total Total Inc.   Grp   Que Call Que  Que  Out   %  Out
+No.  Siz  Type Dir Hour Usage Seize Seize  Ovfl  Siz Qued Ovf  Abd  Srv  ATB Blk
+                                                                                
+94   100  sip  two 2300 0    0      0      0     0   0    0    0    100  100 0  
+95   100  sip  two 2300 0    0      0      0     0   0    0    0    100  100 0  
+96   200  sip  two 1500 0    14     14     0     0   0    0    0    0    0   0  
+97   200  sip  two 1100 4    113    79     0     0   0    0    0    0    0   0  
+100  20   sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+125  2000 sip  two 500  0    15     5      0     0   0    0    0    0    0   0  
+126  2000 sip  two 1200 20   1      1      0     0   0    0    0    0    0   0  
+127  1000 sip  two 2300 0    0      0      0     0   0    0    0    1000 100 0  
+128  1000 sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+200  240  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+                                                                                
+                                                                                
+                                                                                
+Switch Name: TechMahindra Hyd                 Date: 4:24 am  TUE JUL 15, 2025   
+                                                                                
+                    TRUNK GROUP SUMMARY REPORT                                  
+                                                                                
+                Peak Hour For All Trunk Groups: 1000                            
+                                                                            %   
+Grp  Grp  Grp  Grp Meas Total Total Inc.   Grp   Que Call Que  Que  Out   %  Out
+No.  Siz  Type Dir Hour Usage Seize Seize  Ovfl  Siz Qued Ovf  Abd  Srv  ATB Blk
+                                                                                
+293  50   sip  two 200  9    1      1      0     0   0    0    0    0    0   0  
+294  50   sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+295  50   sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+296  50   sip  two 200  9    3      1      0     0   0    0    0    0    0   0  
+297  50   sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+300  30   isdn two 2300 0    0      0      0     0   0    0    0    0    0   0  
+321  255  sip  two 1600 1533 612    555    0     0   0    0    0    0    0   0  
+322  280  sip  two 800  18   1      1      0     0   0    0    0    0    0   0  
+323  280  sip  two 1100 2    907    907    0     0   0    0    0    0    0   0  
+324  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+                                                                                
+                                                                                
+                                                                                
+Switch Name: TechMahindra Hyd                 Date: 4:24 am  TUE JUL 15, 2025   
+                                                                                
+                    TRUNK GROUP SUMMARY REPORT                                  
+                                                                                
+                Peak Hour For All Trunk Groups: 1000                            
+                                                                            %   
+Grp  Grp  Grp  Grp Meas Total Total Inc.   Grp   Que Call Que  Que  Out   %  Out
+No.  Siz  Type Dir Hour Usage Seize Seize  Ovfl  Siz Qued Ovf  Abd  Srv  ATB Blk
+                                                                                
+325  240  sip  two 1000 3063 285    221    0     0   0    0    0    0    0   0  
+326  240  sip  two 1400 786  132    132    0     0   0    0    0    0    0   0  
+327  240  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+328  240  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+329  240  sip  two 900  466  93     81     0     0   0    0    0    0    0   0  
+330  240  sip  two 900  232  44     44     0     0   0    0    0    0    0   0  
+351  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+356  100  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+381  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+382  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+                                                                                
+                                                                                
+                                                                                
+Switch Name: TechMahindra Hyd                 Date: 4:24 am  TUE JUL 15, 2025   
+                                                                                
+                    TRUNK GROUP SUMMARY REPORT                                  
+                                                                                
+                Peak Hour For All Trunk Groups: 1000                            
+                                                                            %   
+Grp  Grp  Grp  Grp Meas Total Total Inc.   Grp   Que Call Que  Que  Out   %  Out
+No.  Siz  Type Dir Hour Usage Seize Seize  Ovfl  Siz Qued Ovf  Abd  Srv  ATB Blk
+                                                                                
+385  250  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+386  250  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+387  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+388  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+389  30   isdn two 2300 0    0      0      0     0   0    0    0    30   100 0  
+390  30   isdn two 2300 0    0      0      0     0   0    0    0    30   100 0  
+395  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+396  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+397  250  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+398  250  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+                                                                                
+                                                                                
+                                                                                
+Switch Name: TechMahindra Hyd                 Date: 4:24 am  TUE JUL 15, 2025   
+                                                                                
+                    TRUNK GROUP SUMMARY REPORT                                  
+                                                                                
+                Peak Hour For All Trunk Groups: 1000                            
+                                                                            %   
+Grp  Grp  Grp  Grp Meas Total Total Inc.   Grp   Que Call Que  Que  Out   %  Out
+No.  Siz  Type Dir Hour Usage Seize Seize  Ovfl  Siz Qued Ovf  Abd  Srv  ATB Blk
+                                                                                
+617  10   sip  two 2300 0    0      0      0     0   0    0    0    10   100 0  
+620  150  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+624  100  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+626  80   sip  two 1000 2564 714    180    7     0   0    0    0    0    2   1  
+627  30   sip  two 2300 0    0      0      0     0   0    0    0    30   100 0  
+630  200  sip  two 1000 383  350    3      0     0   0    0    0    0    0   0  
+634  255  sip  two 2300 0    0      0      0     0   0    0    0    0    0   0  
+635  255  sip  two 700  50   40     10     0     0   0    0    0    0    0   0  
+636  255  sip  two 1000 0    1      1      0     0   0    0    0    0    0   0  
+637  255  sip  two 1800 1    8      0      0     0   0    0    0    0    0   0  
+                                                                                
+                                                                                
+                                                                                

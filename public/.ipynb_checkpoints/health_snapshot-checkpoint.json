@@ -1,0 +1,162 @@
+{
+  "uptime": {
+    "uptime_days": 90,
+    "configured_threshold": 180,
+    "status": "Normal"
+  },
+  "certificate": {
+    "status": "Critical",
+    "details": [
+      {
+        "name": "SystemManagerCA.crt",
+        "expires_on": "2033-09-25",
+        "expires_in_days": 2906,
+        "status": "Normal"
+      },
+      {
+        "name": "apr-ca.crt",
+        "expires_on": "2033-08-14",
+        "expires_in_days": 2864,
+        "status": "Normal"
+      },
+      {
+        "name": "motorola_sseca_root.crt",
+        "expires_on": "2033-12-04",
+        "expires_in_days": 2976,
+        "status": "Normal"
+      },
+      {
+        "name": "sip_product_root.crt",
+        "expires_on": "2027-08-17",
+        "expires_in_days": 675,
+        "status": "Normal"
+      },
+      {
+        "name": "server.crt",
+        "expires_on": "2027-06-06",
+        "expires_in_days": 603,
+        "status": "Normal"
+      },
+      {
+        "name": "server.crt",
+        "expires_on": "2025-01-28",
+        "expires_in_days": -256,
+        "status": "Critical"
+      }
+    ]
+  },
+  "alarms": {
+    "status": "Major",
+    "summary": {
+      "Critical": 0,
+      "Major": 1,
+      "Minor": 2
+    }
+  },
+  "resources": {
+    "cpu": {
+      "value": 0,
+      "status": "Normal"
+    },
+    "memory": {
+      "used_percent": 0,
+      "status": "Normal"
+    },
+    "disk": {
+      "df -k": {
+        "/dev/mapper/sysvg-lv_root": {
+          "used_percent": 28
+        },
+        "devtmpfs": {
+          "used_percent": 0
+        },
+        "tmpfs": {
+          "used_percent": 0
+        },
+        "/dev/mapper/sysvg-lv_var": {
+          "used_percent": 3
+        },
+        "/dev/mapper/sysvg-lv_home": {
+          "used_percent": 1
+        },
+        "/dev/mapper/sysvg-lv_tmp": {
+          "used_percent": 2
+        },
+        "/dev/sda1": {
+          "used_percent": 28
+        },
+        "/dev/mapper/datavg-lv_data": {
+          "used_percent": 1
+        },
+        "/dev/mapper/logvg-lv_var_log": {
+          "used_percent": 9
+        },
+        "/dev/mapper/logvg-lv_var_log_audit": {
+          "used_percent": 66
+        }
+      },
+      "df -h": {
+        "/dev/mapper/sysvg-lv_root": {
+          "size": "13G",
+          "used": "3.5G",
+          "available": "9.1G",
+          "used_percent": 28
+        },
+        "devtmpfs": {
+          "size": "2.4G",
+          "used": "0",
+          "available": "2.4G",
+          "used_percent": 0
+        },
+        "tmpfs": {
+          "size": "480M",
+          "used": "0",
+          "available": "480M",
+          "used_percent": 0
+        },
+        "/dev/mapper/sysvg-lv_var": {
+          "size": "13G",
+          "used": "301M",
+          "available": "13G",
+          "used_percent": 3
+        },
+        "/dev/mapper/sysvg-lv_home": {
+          "size": "8.3G",
+          "used": "33M",
+          "available": "8.3G",
+          "used_percent": 1
+        },
+        "/dev/mapper/sysvg-lv_tmp": {
+          "size": "8.3G",
+          "used": "93M",
+          "available": "8.2G",
+          "used_percent": 2
+        },
+        "/dev/sda1": {
+          "size": "509M",
+          "used": "143M",
+          "available": "367M",
+          "used_percent": 28
+        },
+        "/dev/mapper/datavg-lv_data": {
+          "size": "10G",
+          "used": "47M",
+          "available": "10G",
+          "used_percent": 1
+        },
+        "/dev/mapper/logvg-lv_var_log": {
+          "size": "27G",
+          "used": "2.3G",
+          "available": "25G",
+          "used_percent": 9
+        },
+        "/dev/mapper/logvg-lv_var_log_audit": {
+          "size": "3.0G",
+          "used": "2.0G",
+          "available": "1.1G",
+          "used_percent": 66
+        }
+      }
+    }
+  }
+}

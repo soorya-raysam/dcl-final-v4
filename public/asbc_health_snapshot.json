@@ -1,0 +1,74 @@
+{
+    "Information": {
+        "System Time": {
+            "Value": "10:01:46 PM IST",
+            "Status": "Normal"
+        },
+        "Version": {
+            "Value": "10.1.2.0-64-23285",
+            "Status": "Normal"
+        },
+        "GUI Version": {
+            "Value": "10.1.2.0-23278",
+            "Status": "Normal"
+        },
+        "Build Date": {
+            "Value": "Tue May 16 08:55:42 IST 2023",
+            "Status": "Normal"
+        },
+        "License State": {
+            "Value": "Problem Connecting to WebLM Server.",
+            "Status": "Normal"
+        },
+        "Grace Period State": {
+            "Value": "Initial Evaluation Period.",
+            "Status": "Normal"
+        },
+        "Grace Period Expiration Date": {
+            "Value": "Sat Aug 23 12:38:01 IST 2025",
+            "Status": "Normal"
+        },
+        "Aggregate Licensing Overages": {
+            "Value": "0",
+            "Status": "Normal"
+        },
+        "Peak Licensing Overage Count": {
+            "Value": "0",
+            "Status": "Normal"
+        },
+        "Last Logged in at": {
+            "Value": "07/24/2025 17:09:03 IST",
+            "Status": "Normal"
+        },
+        "Failed Login Attempts": {
+            "Value": "0",
+            "Status": "Normal"
+        }
+    },
+    "Active Alarms": {
+        "sbce121 - Alarm 1": {
+            "Value": "Link failure on interface B1",
+            "Status": "Critical"
+        },
+        "sbce121 - Alarm 2": {
+            "Value": "Link failure on interface A1",
+            "Status": "Critical"
+        }
+    },
+    "Installed Devices": {
+        "Device 1": {
+            "Value": "EMS",
+            "Status": "Normal"
+        },
+        "Device 2": {
+            "Value": "sbce121",
+            "Status": "Normal"
+        }
+    },
+    "Incidents": {
+        "Incident 1": {
+            "Value": "None found.",
+            "Status": "Normal"
+        }
+    }
+}

@@ -1,0 +1,110 @@
+                  Voice System name: HYD_CM - TRUNK GROUPS                      
+                                                                                
+Grp                                                No.                   Out Que
+No.  TAC  Group Type   Group Name                  Mem  TN  COR CDR Meas Dsp Len
+                                                                                
+5    1005 isdn         HY_TATA_66361300            30   12  92  y   ext  n   0  
+9    1009 isdn         HY_TATA_4066292620          30   17  120 y   both n   0  
+10   1010 isdn         HY_ARTL_49155333            30   10  24  y   ext  n   0  
+21   1021 isdn         HY_TATA_4066292650          30   79  79  y   both n   15 
+27   1027 isdn         HY_TATA_IPLC_40128335796    30   71  71  y   both n   0  
+36   1036 isdn         TATAIPL_091HYDE002017313557 30   151 151 y   both n   0  
+38   1038 isdn         Budapest_Org_E1_322620099   30   128 129 y   ext  n   0  
+39   1039 isdn         Budapest_Orange_E1_2        30   128 129 y   ext  n   0  
+92   1392 sip          MNLSM01-10.71.245.70        200  205 611 y   none n   0  
+93   1393 sip          MNLSM02-10.71.245.76        200  205 611 y   none n   0  
+94   1394 sip          MNL-PPM                     100  1   611 y   none n   0  
+95   1395 sip          MNLSM-2 to CM PPM           100  1   1   y   none n   0  
+96   1096 sip          TO_CBA_CLV_SM               200  1   1   y   none n   0  
+97   1097 sip          TO_ATL_CBA_ATL_SM           200  1   1   y   int  n   0  
+                                                                                
+                                                                                
+                                                                                
+                                TRUNK GROUPS                                    
+                                                                                
+Grp                                                No.                   Out Que
+No.  TAC  Group Type   Group Name                  Mem  TN  COR CDR Meas Dsp Len
+                                                                                
+100  1100 sip          CLV_SM_CM_PPM_5069          20   1   1   y   both n   0  
+125  1125 sip          Talk_talk_Sal_MK_SM_PPM     2000 221 320 n   ext  y   0  
+126  1126 sip          Talk_Talk_UK_Sal_MK_SIG     2000 221 320 n   both y   0  
+127  1127 sip          TT_UK_SAL_SIG               1000 221 320 y   none n   0  
+128  1128 sip          TT_UK_MK_SIG                1000 221 320 y   none n   0  
+200  1200 sip          HYDCM- MALSM                240  1   1   y   both n   0  
+293  1398 sip          CHD-ASM-OUTBOUND            50   1   1   y   none n   0  
+294  1294 sip          CHD-CLV-SM100-5099          50   1   1   y   none n   0  
+295  1295 sip          CHDAHN-SM-ESS               50   1   1   y   none n   0  
+296  1296 sip          CHDAHN-SM-PPM               50   1   1   y   none n   0  
+297  1297 sip          CHD-ASM-OUTBOUND            50   1   1   y   none n   0  
+300  1300 isdn         NOIDA_HYD                   30   1   1   y   none n   0  
+321  1321 sip          M3K Clevland - CLV SM1      255  1   1   y   ext  n   0  
+322  1322 sip          CLV_Verizon_CLV SM          280  1   1   y   both n   0  
+                                                                                
+                                                                                
+                                                                                
+                                TRUNK GROUPS                                    
+                                                                                
+Grp                                                No.                   Out Que
+No.  TAC  Group Type   Group Name                  Mem  TN  COR CDR Meas Dsp Len
+                                                                                
+323  1323 sip          ATL_Verizon_ATL SM1         280  1   1   y   both n   0  
+324  1324 sip          ATL-SM-CM-ALL               255  1   1   y   both n   0  
+325  1325 sip          CLV-SM-CM-Orange            240  200 1   y   both n   0  
+326  1326 sip          ATL-SM-CM-Orange            240  200 1   y   both n   0  
+327  1327 sip          Orange-SM100-CLV            240  1   1   y   none n   0  
+328  1328 sip          Orange-SM100-ATL            240  1   1   y   none n   0  
+329  1329 sip          CLV-SM-CM-Orange-New        240  200 1   y   both n   0  
+330  1330 sip          ATL-SM-CM-Orange_new        240  200 1   y   both n   0  
+351  1351 sip          M3K-Cleveland SIP OB        255  19  90  y   ext  n   0  
+356  1356 sip          M3K_ATL_SIP_7707790056      100  19  90  y   ext  n   0  
+381  1381 sip          AmazonSM1-10.23.29.8        255  1   1   y   both n   0  
+382  1382 sip          AmazonSM2-10.23.29.14       255  211 211 y   both n   0  
+385  1385 sip          To_MX_City_SM_5094          250  181 181 y   both n   0  
+386  1386 sip          To_AG_SM_5069               250  181 181 y   both n   0  
+                                                                                
+                                                                                
+                                                                                
+                                TRUNK GROUPS                                    
+                                                                                
+Grp                                                No.                   Out Que
+No.  TAC  Group Type   Group Name                  Mem  TN  COR CDR Meas Dsp Len
+                                                                                
+387  1387 sip          ATENA                       255  181 181 y   both n   0  
+388  1388 sip          Aetna_AG                    255  181 181 y   both n   0  
+389  1389 isdn         MEX_AXTL1_5510002980        30   183 183 y   ext  n   0  
+390  1390 isdn         MEX_AXTL2_5510001180        30   183 183 y   ext  n   0  
+395  1895 sip          Narayana-AmazonSM1          255  1   1   y   none n   0  
+396  1896 sip          Narayana_AmazonSM2          255  1   1   y   none n   0  
+397  1897 sip          Narayana_AnazonSM1_5096     250  1   1   y   none n   0  
+398  1898 sip          Narayana_AmazonSM2_5096     250  1   1   y   none n   0  
+617  1617 sip          CM to AAEP Hyd              10   1   1   y   none n   0  
+620  1620 sip          HYD_CM_SM_PPM_TEST          150  1   1   y   none y   0  
+624  1262 sip          ATL_SIP_TEST_Not in pro     100  1   1   y   none n   0  
+626  1626 sip          CLV_SIP_PPM_H&M             80   1   1   y   none n   0  
+627  1627 sip          CLV-PPM-Failover            30   1   1   y   none n   0  
+630  1630 sip          ATL_SM_CM_PPM_5073          200  1   1   y   none n   0  
+                                                                                
+                                                                                
+                                                                                
+                                TRUNK GROUPS                                    
+                                                                                
+Grp                                                No.                   Out Que
+No.  TAC  Group Type   Group Name                  Mem  TN  COR CDR Meas Dsp Len
+                                                                                
+634  1272 sip          ATL-SM-PPM-test             255  1   1   y   none n   0  
+635  1635 sip          TO_Budapest_CM              255  156 356 y   none y   0  
+636  1636 sip          To_Budapest_SM2             255  156 356 y   none n   0  
+637  1637 sip          HYD-SM TO IXM               255  1   1   y   none n   0  
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                
+                                                                                

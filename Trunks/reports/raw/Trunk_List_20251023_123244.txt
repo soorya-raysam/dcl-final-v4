@@ -1,0 +1,2 @@
+list trunk-group
+INVALID TERMINAL TYPE

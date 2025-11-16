@@ -1,0 +1,8 @@
+System: Small                        Software Version: R018x.01.0.890.0
+Terminal Type (513, 715, 4410, 4425, VT220, NTT, W2KTT, SUNT): [513] sat
+INVALID TERMINAL TYPE
+System: Small                        Software Version: R018x.01.0.890.0
+Terminal Type (513, 715, 4410, 4425, VT220, NTT, W2KTT, SUNT): [513] list measurements trunk-group summary yesterday-peak
+INVALID TERMINAL TYPE
+System: Small                        Software Version: R018x.01.0.890.0
+Terminal Type (513, 715, 4410, 4425, VT220, NTT, W2KTT, SUNT): [513]
