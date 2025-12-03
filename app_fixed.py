@@ -17,6 +17,7 @@ from monitor_traffic_trunk_groups import run_monitor_traffic_trunk_groups, parse
 # ---- add these imports near the other script imports ----
 from status_trunk import run_status_trunk_all, run_status_trunk, parse_status_trunk
 
+import csv
 
 import re
 
@@ -557,6 +558,113 @@ def get_list_trunk_group_data():
 
     except Exception as e:
         print(f"❌ Error in /get-list-trunk-group-data: {e}")
+        return jsonify({"error": str(e)}), 500
+
+
+
+
+
+HARDCODE_CSV = os.path.join(REPORT_DIR, "report_list_trunk-group.csv")
+
+@app.route("/get-list-trunk-group-fixed", methods=["GET", "POST", "OPTIONS"])
+def get_list_trunk_group_fixed():
+    """
+    Serve a cleaned JSON version of report_list_trunk-group.csv.
+    Detects and removes leading title/meta rows and finds the real header row
+    (looks for 'Group Number' or similar). Returns:
+      { "columns": [...], "data": [...], "excel_path": "<csv path>" }
+    """
+    if request.method == "OPTIONS":
+        return ("", 200)
+
+    try:
+        if not os.path.exists(HARDCODE_CSV):
+            return jsonify({"error": "CSV not found", "path": HARDCODE_CSV}), 404
+
+        # Read raw CSV into list of rows (preserve empty strings)
+        with open(HARDCODE_CSV, newline="", encoding="utf-8") as f:
+            reader = csv.reader(f)
+            raw_rows = [row for row in reader]
+
+        # Normalize rows: strip each cell
+        rows = [[(cell or "").strip() for cell in r] for r in raw_rows if any((cell or "").strip() for cell in r)]
+
+        if not rows:
+            return jsonify({"columns": [], "data": [], "excel_path": HARDCODE_CSV}), 200
+
+        # Heuristics:
+        # - First row frequently is a title like "12-3-2025 ... Report for Voice System .. - list trunk-group"
+        # - Real header row often contains 'Group Number' or 'Group No' or 'Queue Length' etc.
+        header_idx = None
+        header_candidates = ["group number", "group no", "grp no", "queue length", "queue len", "group"]
+        for i, r in enumerate(rows):
+            joined = " ".join([c.lower() for c in r if c])
+            if any(tok in joined for tok in header_candidates):
+                header_idx = i
+                break
+
+        # If we couldn't find a header row, fallback:
+        if header_idx is None:
+            # try second row (common)
+            header_idx = 1 if len(rows) > 1 else 0
+
+        header_row = rows[header_idx]
+        # If header row is a single very long title, try next row as header
+        if len([c for c in header_row if c]) == 1 and header_idx + 1 < len(rows):
+            # consider next row a true header
+            header_idx += 1
+            header_row = rows[header_idx]
+
+        # Build columns by taking non-empty header cells and normalizing names
+        columns = []
+        for c in header_row:
+            if c:
+                name = c
+            else:
+                # generate placeholder column name if a blank cell exists in header
+                name = f"col_{len(columns)+1}"
+            # normalize name spacing
+            name = " ".join(name.split())
+            columns.append(name)
+
+        # Data rows are rows after header_idx
+        data_rows = []
+        for r in rows[header_idx + 1:]:
+            # pad/truncate row to match header length
+            padded = (r + [""] * len(columns))[:len(columns)]
+            # make object mapping header->value
+            obj = {columns[i]: padded[i] for i in range(len(columns))}
+            data_rows.append(obj)
+
+        # If it looks like the CSV had vertical layout (labels in first column, values in second),
+        # convert it to one-row keyed object.
+        # Example pattern in your sample: header_row had "Group Number:" in column 2 and "Queue Length:" in column 1.
+        # Detect if header contains a big title (single long string) and the following rows look like pairs.
+        if len(columns) == 1 and len(data_rows) > 0:
+            # try transposing label/value pairs into tabular rows
+            # build list of pairs from remaining rows where first cell is label-like
+            pairs = []
+            for r in rows[header_idx + 1:]:
+                # if row length >=2 and either cell contains ":" or small text
+                if len(r) >= 2 and (r[0] or r[1]):
+                    label = r[0].rstrip(":").strip() or f"col_1"
+                    value = r[1].strip()
+                    pairs.append((label, value))
+            if pairs:
+                # create columns from labels and a single row from values
+                derived_columns = [p[0] for p in pairs]
+                derived_row = {p[0]: p[1] for p in pairs}
+                columns = derived_columns
+                data_rows = [derived_row]
+
+        return jsonify({
+            "columns": columns,
+            "data": data_rows,
+            "excel_path": HARDCODE_CSV
+        }), 200
+
+    except Exception as e:
+        app.logger.exception("Failed to parse hardcoded list trunk-group CSV")
         return jsonify({"error": str(e)}), 500
 
 
