@@ -44,14 +44,23 @@ export default function SectionDetails() {
       <div>
         <span
           style={{ cursor: "pointer", textDecoration: "underline" }}
-          onClick={() => navigate("/")}
+          // onClick={() => navigate("/")}
+          onClick={() => {
+            sessionStorage.setItem("viewOnlyMode", "true");
+            navigate("/");
+          }}
+          
         >
           🏠 Home
         </span>{" "}
         /{" "}
         <span
           style={{ cursor: "pointer", textDecoration: "underline" }}
-          onClick={() => navigate(`/dashboard/${encodeURIComponent(decodedProduct)}`)}
+          onClick={() => {
+            sessionStorage.setItem("viewOnlyMode", "true");
+            navigate(`/dashboard/${encodeURIComponent(decodedProduct)}`);
+          }}
+          
         >
           {decodedProduct}
         </span>{" "}
@@ -59,6 +68,7 @@ export default function SectionDetails() {
       </div>
     </div>
   );
+  
 
   // --- Download Report (Excel) ---
   const handleDownloadExcel = (tableId, filenamePrefix) => {
@@ -77,12 +87,68 @@ export default function SectionDetails() {
   };
 
   // --- Fetch Data ---
+  // --- Fetch Data (small / targeted fetch) ---
   const fetchData = async () => {
     try {
       setRefreshing(true);
-      const res = await fetch(`${process.env.REACT_APP_API_URL}get-live-health-data`);
+
+      // get creds from localStorage (TableView saves these)
+      const ip = localStorage.getItem("ssh_ip");
+      const password = localStorage.getItem("ssh_password");
+
+      if (!ip || !password) {
+        console.warn("No IP/password available in localStorage — falling back to GET");
+      }
+
+      // map section → endpoint
+      const sectionLower = decodedSection.toLowerCase();
+      let endpoint = null;
+      let options = {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ ip, password }),
+      };
+
+      if (sectionLower.includes("uptime")) {
+        endpoint = `${process.env.REACT_APP_API_URL}health/uptime`;
+      } else if (sectionLower.includes("disk utilisation") || sectionLower.includes("df -h") || sectionLower.includes("df -k")) {
+        // fetch both df -h and df -k
+        endpoint = `${process.env.REACT_APP_API_URL}health/disk`;
+      } else if (sectionLower.includes("server status")) {
+        endpoint = `${process.env.REACT_APP_API_URL}health/server-status`;
+      } else if (sectionLower === "alarms") {
+        endpoint = `${process.env.REACT_APP_API_URL}health/alarms`;
+      } else if (sectionLower.includes("backup")) {
+        endpoint = `${process.env.REACT_APP_API_URL}health/backup`;
+      } else {
+        // fallback to original all-in-one endpoint for anything else
+        endpoint = `${process.env.REACT_APP_API_URL}get-live-health-data`;
+      }
+
+      const res = await fetch(endpoint, options);
       const json = await res.json();
-      setData(json);
+
+      // Normalize response to previous 'data' shape expected by this component
+      // Only populate keys relevant to the section to avoid UI code changes.
+      const normalized = { ...data }; // keep old data if present
+
+      if (endpoint.endsWith("/health/uptime")) {
+        normalized.system_uptime = json.system_uptime || json.raw || "";
+      } else if (endpoint.endsWith("/health/disk")) {
+        // your backend returns { "df -h": [...], "df -k": [...] }
+        normalized.disk_utilisation = json;
+      } else if (endpoint.endsWith("/health/server-status")) {
+        normalized.server_status = json.server_status || "";
+      } else if (endpoint.endsWith("/health/alarms")) {
+        normalized.alarms = json.alarms_parsed || json.alarms_raw || [];
+      } else if (endpoint.endsWith("/health/backup")) {
+        normalized.backup_status = json.backup_status || "";
+      } else {
+        // fallback to whole payload shape
+        Object.assign(normalized, json);
+      }
+
+      setData(normalized);
       setLastUpdated(new Date().toLocaleString());
     } catch (err) {
       console.error("❌ Error fetching live data:", err);
@@ -91,6 +157,7 @@ export default function SectionDetails() {
       setRefreshing(false);
     }
   };
+
 
   const fetchAlarms = async () => {
     try {
@@ -112,8 +179,20 @@ export default function SectionDetails() {
   // --- Disk Utilisation History ---
   useEffect(() => {
     if (data?.disk_utilisation) {
-      const diskOutput = data?.disk_utilisation["df -h"] || data?.disk_utilisation["df -k"];
-      const lines = diskOutput?.split("\n").filter((l) => /\d+%/.test(l)) || [];
+      const rawDisk = data?.disk_utilisation["df -h"] || data?.disk_utilisation["df -k"];
+
+      let diskText = "";
+      if (Array.isArray(rawDisk)) {
+        diskText =
+          rawDisk
+            .map((row) => `${row.Filesystem} ${row.Size} ${row.Used} ${row.Avail} ${row["Use%"]} ${row.Mounted_on}`)
+            .join("\n");
+      } else if (typeof rawDisk === "string") {
+        diskText = rawDisk;
+      }
+      
+      const lines = diskText.split("\n").filter((l) => /\d+%/.test(l));
+      
       const usageValues = lines
         .map((line) => {
           const match = line.match(/\s(\d+)%/);
@@ -132,43 +211,194 @@ export default function SectionDetails() {
   }, [data]);
 
   // --- Helpers ---
-  const parseDfOutput = (text) => {
-    if (!text) return { headers: [], rows: [] };
-    const lines = text.replace(/\r\n/g, "\n").trim().split("\n").filter(Boolean);
-    if (lines.length < 2) return { headers: [], rows: [] };
-    const dfRegex =
-      /^(\S+)\s+([\d.]+[A-ZKMGTP]?)\s+([\d.]+[A-ZKMGTP]?)\s+([\d.]+[A-ZKMGTP]?)\s+(\d+%)\s+(.+)$/;
-    const rows = [];
-    for (let i = 1; i < lines.length; i++) {
-      const match = dfRegex.exec(lines[i]);
-      if (match) rows.push([match[1], match[2], match[3], match[4], match[5], match[6]]);
+  // const parseDfOutput = (text) => {
+  //   if (!text) return { headers: [], rows: [] };
+  //   const lines = text.replace(/\r\n/g, "\n").trim().split("\n").filter(Boolean);
+  //   if (lines.length < 2) return { headers: [], rows: [] };
+  //   const dfRegex =
+  //     /^(\S+)\s+([\d.]+[A-ZKMGTP]?)\s+([\d.]+[A-ZKMGTP]?)\s+([\d.]+[A-ZKMGTP]?)\s+(\d+%)\s+(.+)$/;
+  //   const rows = [];
+  //   for (let i = 1; i < lines.length; i++) {
+  //     const match = dfRegex.exec(lines[i]);
+  //     if (match) rows.push([match[1], match[2], match[3], match[4], match[5], match[6]]);
+  //   }
+  //   return { headers: ["Filesystem", "Size", "Used", "Avail", "Use%", "Mounted on"], rows };
+  // };
+
+  const parseDfArray = (arr) => {
+    if (!Array.isArray(arr)) return { headers: [], rows: [] };
+  
+    const headers = ["Filesystem", "Size", "Used", "Avail", "Use%", "Mounted on"];
+  
+    const rows = arr.map(item => [
+      item["Filesystem"] || "",
+      item["Size"] || "",
+      item["Used"] || "",
+      item["Avail"] || "",
+      item["Use%"] || "",
+      item["Mounted on"] || "",   // ✔ correct key from backend
+    ]);
+  
+    return { headers, rows };
+  };
+  
+
+
+  
+
+// parseServerStatus - robust parser for single or two-column Server Status output
+// parseServerStatus - supports single or two-column server output,
+// returns cluster, metadata, and servers array. Includes Processor Ethernet and PE Priority.
+function parseServerStatus(raw) {
+  if (!raw) return null;
+
+  const text = raw.replace(/\r/g, "");
+  const lines = text.split("\n").map((l) => l.replace(/\u00A0/g, " "));
+
+  // ----------------------------
+  // METADATA: look for top-level key: value fields
+  // ----------------------------
+  const metadataKeys = [
+    "Cluster ID",
+    "Duplication",
+    "Standby Busied\\?",
+    "Standby Refreshed\\?",
+    "Standby Shadowing",
+    "Duplication Link",
+    "Elapsed Time since Init/Interchange"
+  ];
+  const metadata = {};
+  metadataKeys.forEach((k) => {
+    const re = new RegExp(k + "\\s*:\\s*(.+)", "i");
+    const m = text.match(re);
+    metadata[k.replace(/\s*\?$/, "")] = m ? m[1].trim() : ""; // store without trailing ? in key
+  });
+
+  // cluster quick extract (legacy)
+  const clusterMatch = text.match(/Cluster ID:\s*([^\s]+)/i);
+  const cluster = clusterMatch ? clusterMatch[1] : metadata["Cluster ID"] || "Unknown";
+
+  // find the "names" / two-column names line if present (big gap between two names)
+  let namesLineIndex = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (/\s{6,}/.test(ln) && ln.trim().length > 0) {
+      const gap = ln.match(/\s{6,}/);
+      const left = ln.slice(0, gap.index).trim();
+      const right = ln.slice(gap.index + gap[0].length).trim();
+      if (left && right) {
+        namesLineIndex = i;
+        break;
+      }
     }
-    return { headers: ["Filesystem", "Size", "Used", "Avail", "Use%", "Mounted on"], rows };
+  }
+
+  // helper to parse key:value lines into object
+  const parseKeyValueLines = (arrLines) => {
+    const obj = {};
+    for (let l of arrLines) {
+      const line = l.trim();
+      if (!line) continue;
+      const m = line.match(/^([A-Za-z0-9 #%\.\-\/()&]+)\s*:\s*(.*)$/);
+      if (m) {
+        const key = m[1].trim();
+        const val = m[2].trim();
+        obj[key] = val;
+      } else {
+        // continuation heuristic: append to last key if present
+        const lastKey = Object.keys(obj).slice(-1)[0];
+        if (lastKey) obj[lastKey] = (obj[lastKey] + " " + line).trim();
+      }
+    }
+    return obj;
   };
 
-  const parseServerStatus = (text) => {
-    if (!text) return null;
-    const clusterMatch = text.match(/Cluster ID:\s*(\S+)/i);
-    const cmMatch = text.match(/\n\s*(cm\d+)\s*\n/i);
-    const dataPairs = {};
-    const regex =
-      /ID:\s*([^\n]+)|Mode:\s*([^\n]+)|Major Alarms:\s*([^\n]+)|Minor Alarms:\s*([^\n]+)|Control Network:\s*([^\n]+)|Server Hardware:\s*([^\n]+)|Processes:\s*([^\n]+)/gi;
-    let match;
-    while ((match = regex.exec(text)) !== null) {
-      if (match[1]) dataPairs["ID"] = match[1].trim();
-      if (match[2]) dataPairs["Mode"] = match[2].trim();
-      if (match[3]) dataPairs["Major Alarms"] = match[3].trim();
-      if (match[4]) dataPairs["Minor Alarms"] = match[4].trim();
-      if (match[5]) dataPairs["Control Network"] = match[5].trim();
-      if (match[6]) dataPairs["Server Hardware"] = match[6].trim();
-      if (match[7]) dataPairs["Processes"] = match[7].trim();
-    }
-    return {
-      cluster: clusterMatch ? clusterMatch[1] : "Unknown",
-      cmName: cmMatch ? cmMatch[1] : "Unknown",
-      tableData: dataPairs,
-    };
+  // ensure server table contains the standard columns we'll show (even if empty)
+  const ensureStandardColumns = (obj) => {
+    const required = [
+      "ID",
+      "Mode",
+      "Major Alarms",
+      "Minor Alarms",
+      "Control Network",
+      "Processor Ethernet",
+      "PE Priority",
+      "Server Hardware",
+      "Processes"
+    ];
+    required.forEach((k) => {
+      if (!(k in obj)) obj[k] = "";
+    });
+    return obj;
   };
+
+  // CASE: two-column layout found
+  if (namesLineIndex >= 0) {
+    const nameLine = lines[namesLineIndex];
+    const gapMatch = nameLine.match(/\s{6,}/);
+    const splitIdx = gapMatch ? gapMatch.index + gapMatch[0].length : Math.floor(nameLine.length / 2);
+
+    const leftName = nameLine.slice(0, splitIdx).trim() || "Server 1";
+    const rightName = nameLine.slice(splitIdx).trim() || "Server 2";
+
+    const leftLines = [];
+    const rightLines = [];
+
+    for (let i = namesLineIndex + 1; i < lines.length; i++) {
+      const ln = lines[i];
+      if (!ln || !ln.trim()) continue;
+      const leftPart = ln.length >= splitIdx ? ln.slice(0, splitIdx) : ln;
+      const rightPart = ln.length > splitIdx ? ln.slice(splitIdx) : "";
+      const leftTrim = leftPart.trim();
+      const rightTrim = rightPart.trim();
+      if (leftTrim) leftLines.push(leftTrim);
+      if (rightTrim) rightLines.push(rightTrim);
+    }
+
+    const leftObj = ensureStandardColumns(parseKeyValueLines(leftLines));
+    const rightObj = ensureStandardColumns(parseKeyValueLines(rightLines));
+
+    const servers = [];
+    if (Object.keys(leftObj).length > 0) servers.push({ name: leftName, tableData: leftObj });
+    if (Object.keys(rightObj).length > 0) servers.push({ name: rightName, tableData: rightObj });
+
+    return {
+      cluster,
+      metadata,
+      cmNames: servers.map((s) => s.name),
+      servers
+    };
+  }
+
+  // FALLBACK: single-table parsing (old behavior, but with new columns ensured)
+  const dataLines = [];
+  for (const l of lines) {
+    const trimmed = l.trim();
+    if (!trimmed) continue;
+    if (/^(ID:|Mode:|Major Alarms:|Minor Alarms:|Control Network:|Processor Ethernet:|PE Priority:|Server Hardware:|Processes:)/i.test(trimmed)) {
+      dataLines.push(trimmed);
+    }
+  }
+  const tableData = ensureStandardColumns(parseKeyValueLines(dataLines));
+
+  // Also try to detect a cm name
+  const cmMatch = text.match(/\b(cm\d+)\b/i);
+  const cmName = cmMatch ? cmMatch[1] : "Unknown";
+
+  return {
+    cluster,
+    metadata,
+    cmNames: [cmName],
+    servers: [{ name: cmName, tableData }]
+  };
+}
+
+
+
+
+
+
+  
 
   const getLevelColor = (sev) => {
     switch (sev) {
@@ -240,17 +470,44 @@ export default function SectionDetails() {
       {/* Disk Utilisation */}
       {decodedSection.includes("Disk Utilisation") && (() => {
         const key = decodedSection.includes("(df -h)") ? "df -h" : "df -k";
-        const diskOutput = data?.disk_utilisation?.[key] || "";
-        const { rows } = parseDfOutput(diskOutput);
+// backend may return array or string
+const diskOutput = data?.disk_utilisation?.[key];
+
+// Normalize
+let text = "";
+if (Array.isArray(diskOutput)) {
+  text =
+    "Filesystem Size Used Avail Use% Mounted_on\n" +
+    diskOutput
+      .map(
+        (row) =>
+          `${row.Filesystem} ${row.Size} ${row.Used} ${row.Avail} ${row["Use%"]} ${row.Mounted_on}`
+      )
+      .join("\n");
+} else if (typeof diskOutput === "string") {
+  text = diskOutput;
+} else {
+  text = "";
+}
+
+// const { rows } = parseDfOutput(text || "");
+
+const dfArray = data?.disk_utilisation?.[key] || [];
+const { headers, rows } = parseDfArray(dfArray);
+
+
+
         return (
           <>
             <div className="data-table-container">
               <table id="report-table" className="data-table">
                 <thead>
                   <tr>
-                    {["Filesystem", "Size", "Used", "Avail", "Use%", "Mounted on"].map((h) => (
+                    {/* {["Filesystem", "Size", "Used", "Avail", "Use%", "Mounted on"].map((h) => (
                       <th key={h}>{h}</th>
-                    ))}
+                    ))} */}
+
+                      {headers.map((h) => <th key={h}>{h}</th>)}
                   </tr>
                 </thead>
                 <tbody>
@@ -282,38 +539,65 @@ export default function SectionDetails() {
         );
       })()}
 
-      {/* Server Status */}
-      {decodedSection === "Server Status" && (() => {
-        const parsed = parseServerStatus(data?.server_status || "");
-        if (!parsed) return <p>No server data available.</p>;
-        const { cluster, cmName, tableData } = parsed;
-        const entries = Object.entries(tableData);
-        return (
-          <>
-            <div
-              style={{
-                textAlign: "center",
-                marginBottom: "1rem",
-                color: "#facc15",
-                fontWeight: "600",
-              }}
-            >
-              <p>Cluster ID: {cluster}</p>
-              <p>CM Name: {cmName}</p>
-            </div>
-            <div className="data-table-container">
-              <table id="report-table" className="data-table">
-                <thead>
-                  <tr>{entries.map(([key]) => <th key={key}>{key}</th>)}</tr>
-                </thead>
-                <tbody>
-                  <tr>{entries.map(([_, val], i) => <td key={i}>{val}</td>)}</tr>
-                </tbody>
-              </table>
-            </div>
-          </>
-        );
-      })()}
+{/* Server Status */}
+{decodedSection === "Server Status" && (() => {
+  const parsed = parseServerStatus(data?.server_status || "");
+  if (!parsed) return <p>No server data available.</p>;
+
+  const { cluster, metadata, servers } = parsed;
+
+  return (
+    <>
+      <div style={{ textAlign: "center", marginBottom: "1rem", color: "#facc15", fontWeight: 600 }}>
+        <p>Cluster ID: {metadata["Cluster ID"] || cluster}</p>
+        <p>Duplication: {metadata["Duplication"] || ""}</p>
+        <p>Standby Busied?: {metadata["Standby Busied"] || ""}</p>
+        <p>Standby Refreshed?: {metadata["Standby Refreshed"] || ""}</p>
+        <p>Standby Shadowing: {metadata["Standby Shadowing"] || ""}</p>
+        <p>Duplication Link: {metadata["Duplication Link"] || ""}</p>
+        <p>Elapsed Time since Init/Interchange: {metadata["Elapsed Time since Init/Interchange"] || ""}</p>
+      </div>
+
+      {servers.map((srv, idx) => (
+        <div key={srv.name} style={{ marginBottom: 20, color: "white" }}>
+          <h2>{srv.name}</h2>
+          <div className="data-table-container">
+            <table className="data-table">
+              <thead>
+                <tr>
+                  <th>ID</th>
+                  <th>Mode</th>
+                  <th>Major Alarms</th>
+                  <th>Minor Alarms</th>
+                  <th>Control Network</th>
+                  <th>Processor Ethernet</th>
+                  <th>PE Priority</th>
+                  <th>Server Hardware</th>
+                  <th>Processes</th>
+                </tr>
+              </thead>
+              <tbody>
+                <tr>
+                  <td>{srv.tableData["ID"]}</td>
+                  <td>{srv.tableData["Mode"]}</td>
+                  <td>{srv.tableData["Major Alarms"]}</td>
+                  <td>{srv.tableData["Minor Alarms"]}</td>
+                  <td>{srv.tableData["Control Network"]}</td>
+                  <td>{srv.tableData["Processor Ethernet"]}</td>
+                  <td>{srv.tableData["PE Priority"]}</td>
+                  <td>{srv.tableData["Server Hardware"]}</td>
+                  <td>{srv.tableData["Processes"]}</td>
+                </tr>
+              </tbody>
+            </table>
+          </div>
+        </div>
+      ))}
+    </>
+  );
+})()}
+
+
 
       {/* Alarms */}
 {/* Alarms */}

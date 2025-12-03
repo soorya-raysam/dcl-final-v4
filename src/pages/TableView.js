@@ -275,7 +275,7 @@ export default function TableView() {
         server_status: "Normal",
         backup: "Normal",
         alarms: "Normal",
-        certificate: "Normal",
+        //certificate: "Normal",
       };
     }
   
@@ -285,27 +285,27 @@ export default function TableView() {
       server_status: analyzeSeverity(data?.server_status || "Normal"),
       backup: analyzeSeverity(data?.backup_status || "Normal"),
       alarms: analyzeSeverity(data?.alarms || "Normal"),
-      certificate: "Normal",
+      //certificate: "Normal",
     };
   };
   
 
   const products = [
     "Avaya Communication Manager (CM)",
-    "Avaya Session Border Controller",
-    "Avaya Session Manager",
-    "Avaya Aura Device Services (AADS)",
-    "Avaya Aura® Messaging (AAMS)",
-    "Avaya IX Messaging",
+    // "Avaya Session Border Controller",
+    // "Avaya Session Manager",
+    // "Avaya Aura Device Services (AADS)",
+    // "Avaya Aura® Messaging (AAMS)",
+    // "Avaya IX Messaging",
   ];
 
   const trunkStatuses = [
     { product: "Avaya Communication Manager (CM)", status: "Normal" },
-    { product: "Avaya Session Border Controller", status: "Normal" },
-    { product: "Avaya Session Manager", status: "Normal" },
-    { product: "Avaya Aura Device Services (AADS)", status: "Normal" },
-    { product: "Avaya Aura® Messaging (AAMS)", status: "Warning" },
-    { product: "Avaya IX Messaging", status: "Normal" },
+    // { product: "Avaya Session Border Controller", status: "Normal" },
+    // { product: "Avaya Session Manager", status: "Normal" },
+    // { product: "Avaya Aura Device Services (AADS)", status: "Normal" },
+    // { product: "Avaya Aura® Messaging (AAMS)", status: "Warning" },
+    // { product: "Avaya IX Messaging", status: "Normal" },
   ];
 
   const formatTime = (secs) => {
@@ -320,6 +320,53 @@ export default function TableView() {
     const val = parseInt(value) || 0;
     setRefreshConfig((prev) => ({ ...prev, [key]: val }));
   };
+
+
+
+
+  const getCMAlarmOverride = () => {
+    try {
+      return {
+        severity: sessionStorage.getItem("cm_alarms_severity") || "Normal",
+        blinking: sessionStorage.getItem("cm_alarms_blinking") === "true",
+      };
+    } catch {
+      return { severity: "Normal", blinking: false };
+    }
+  };
+  
+
+
+  const getCMDiskOverride = () => {
+    try {
+      return {
+        severity: sessionStorage.getItem("cm_disk_severity") || "Normal",
+        blinking: sessionStorage.getItem("cm_disk_blinking") === "true",
+      };
+    } catch {
+      return { severity: "Normal", blinking: false };
+    }
+  };
+  
+  const getCMServerOverride = () => {
+    try {
+      return {
+        severity: sessionStorage.getItem("cm_server_severity") || "Normal",
+        blinking: sessionStorage.getItem("cm_server_blinking") === "true",
+      };
+    } catch {
+      return { severity: "Normal", blinking: false };
+    }
+  };
+  
+
+
+
+
+
+
+
+
 
   const handleSetAutoRefresh = () => {
     setAutoRefreshEnabled(true);
@@ -421,11 +468,11 @@ export default function TableView() {
           <tr>
             <th>Product</th>
             <th>Uptime</th>
-            <th>Disk Utilisation</th>
+            <th>Disk Utilisation (df -h)</th>
             <th>Server Status</th>
             <th>Backup</th>
             <th>Alarms</th>
-            <th>Certificates</th>
+            {/* <th>Certificates</th> */}
           </tr>
         </thead>
         <tbody>
@@ -455,11 +502,33 @@ export default function TableView() {
                   ["server_status", "Server Status"],
                   ["backup", "Backup"],
                   ["alarms", "Alarms"],
-                  ["certificate", "Certificates"],
+                  // ["certificate", "Certificates"],
                 ].map(([key, label]) => {
-                  const status = row[key];
-                  const blinking =
+                  let status = row[key];
+                  let blinking =
                     !acknowledged && (status === "Critical" || status === "Major");
+                  
+                  
+                  // CM override: sync with ProductDashboard states
+                  if (isCM) {
+                    if (key === "alarms") {
+                      const cm = getCMAlarmOverride();
+                      status = cm.severity;
+                      blinking = cm.blinking;
+                    }
+                    if (key === "disk") {
+                      const cm = getCMDiskOverride();
+                      status = cm.severity;
+                      blinking = cm.blinking;
+                    }
+                    if (key === "server_status") {
+                      const cm = getCMServerOverride();
+                      status = cm.severity;
+                      blinking = cm.blinking;
+                    }
+                  }
+
+                  
                   let targetSection = label;
                   if (label === "Disk Utilisation")
                     targetSection = "Disk Utilisation (df -h)";

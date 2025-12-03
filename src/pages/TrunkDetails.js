@@ -13,7 +13,8 @@ export default function TrunkDetails() {
   const [filter, setFilter] = useState("");
 
   const [isExecuting, setIsExecuting] = useState(false);
-  const abortControllerRef = useRef(null);
+  const abortControllerRef = useRef(new AbortController());
+
 
   // new states
   const [loading, setLoading] = useState(false);
@@ -68,7 +69,7 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
     { title: "status media-processor all" },
     { title: "status aesvcs interface" },
     { title: "status aesvcs link" },
-    { title: "status cdr-link" },
+    //{ title: "status cdr-link" },
 
 
 
@@ -220,6 +221,13 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
     isRunningRef.current = true;
   
 
+  // Always create exactly one fresh controller per run
+  abortControllerRef.current = new AbortController();
+  const controller = abortControllerRef.current;
+
+    
+
+
 
 
     const encodedProduct = encodeURIComponent(product);
@@ -231,10 +239,8 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
       encodedTitle = encodeURIComponent(`${title} ${trunkNumber}`);
     }
 
-    // Abort previous controller and create a fresh one
-    if (abortControllerRef.current) abortControllerRef.current.abort();
-    const controller = new AbortController();
-    abortControllerRef.current = controller;
+ 
+    
 
     if (action === "refresh") {
       setIsExecuting(true);
@@ -249,20 +255,24 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
       }, 400);
     
       // Store interval handle to clear later
-      abortControllerRef.current = { ...abortControllerRef.current, progressInterval: interval };
+      abortControllerRef.current.progressInterval = interval;
+      
+
     }
     
 
     const executeCommand = async (url, body = null) => {
       try {
         const opts = { method: "POST", signal: controller.signal };
+    
         if (body) {
           opts.headers = { "Content-Type": "application/json" };
           opts.body = JSON.stringify(body);
         }
+    
         const res = await fetch(url, opts);
+    
         if (!res.ok) {
-          // try to extract backend error text
           let errText = "Script execution failed";
           try {
             const j = await res.json();
@@ -270,35 +280,44 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
           } catch (_) {}
           throw new Error(errText);
         }
-        // success -> mark last refreshed and navigate to view page
-
-        //setLastRefreshed((prev) => ({ ...prev, [title]: now }));
-
+    
+        // ⭐ Parse POST JSON once
+        const json = await res.json();
+    
+        // ⭐ Store in sessionStorage (if needed)
+        const key = `latestData:${encodeURIComponent(title)}`;
+        sessionStorage.setItem(key, JSON.stringify(json));
+        
+    
         updateLastRefreshed(title);
-
-
-        // ✅ For all except status trunk, navigate as before
+    
         if (title !== "status trunk") {
           navigate(`/trunk-command/${encodedProduct}/${encodedTitle}`);
         }
-        
+    
+        // ⭐ MOST IMPORTANT FIX → return POST result
+        return json;
+    
       } catch (err) {
         if (err.name === "AbortError") {
           alert("Command execution canceled.");
         } else {
           alert("Error executing command: " + err.message);
         }
-      } 
-      finally {
-        if (abortControllerRef.current?.progressInterval)
+    
+      } finally {
+        if (abortControllerRef.current?.progressInterval) {
           clearInterval(abortControllerRef.current.progressInterval);
+        }
         setProgress(100);
-        setTimeout(() => setProgress(0), 1000); // reset after done
+        setTimeout(() => setProgress(0), 1000);
+    
         setIsExecuting(false);
         setLoading(false);
+        isRunningRef.current = false;
       }
-      
     };
+    
 
     try {
       setLoading(true);
@@ -310,51 +329,58 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
 
 
       if (title === "list measurements trunk-group summary yesterday-peak") {
-        await executeCommand(`${process.env.REACT_APP_API_URL}get-yesterday-peak-data`);
+        // Single clean POST — this triggers backend to run command
+        const json = await executeCommand(
+            `${process.env.REACT_APP_API_URL}get-yesterday-peak-data`,
+            {
+                ip: localStorage.getItem("ssh_ip"),
+                password: localStorage.getItem("ssh_password")
+            }
+        );
+    
       
-        try {
-          // Fetch latest data immediately after run
-          const res = await fetch(`${process.env.REACT_APP_API_URL}get-yesterday-peak-data`);
-          const json = await res.json();
-      
-          if (json?.data && Array.isArray(json.data)) {
-            const hasAlert = json.data.some((row) => {
-              const outSrvKey = Object.keys(row).find(
-                (k) => k.trim().toLowerCase() === "out srv"
-              );
-              const atbKey = Object.keys(row).find(
-                (k) => k.trim().toLowerCase() === "% atb"
-              );
-      
-              const outSrvVal = parseFloat((row[outSrvKey] || "0").toString().trim());
-              const atbVal = parseFloat((row[atbKey] || "0").toString().trim());
-      
-              return (outSrvVal && outSrvVal !== 0) || (atbVal && atbVal !== 0);
-            });
-      
-            setBlinkingCards((prev) => ({
-              ...prev,
-              [title]: hasAlert && !acknowledged[title],
-            }));
-          }
-        } catch (err) {
-          console.error("Error updating blinking for yesterday-peak:", err);
-        }
-      }
+    }
+    
       
       
 
       else if (title === "list trunk-group") {
-        await executeCommand(`${process.env.REACT_APP_API_URL}run-list-trunk-group`);
-      } else if (title === "monitor traffic trunk-groups") {
-        await executeCommand(`${process.env.REACT_APP_API_URL}run-monitor-traffic-trunk-groups`);
+        await executeCommand(
+          `${process.env.REACT_APP_API_URL}get-list-trunk-group-data`,
+          {
+              ip: localStorage.getItem("ssh_ip"),
+              password: localStorage.getItem("ssh_password")
+          }
+      );
+      
+
       } 
+      
+      else if (title === "monitor traffic trunk-groups") {
+        const json = await executeCommand(
+            `${process.env.REACT_APP_API_URL}get-monitor-traffic-trunk-groups-data`,
+            {
+                ip: localStorage.getItem("ssh_ip"),
+                password: localStorage.getItem("ssh_password")
+            }
+        );
+    
+        return json;
+    }
+    
       
 
       
       else if (title === "status trunk") {
         // 🔁 No user input, fully automatic
-        await executeCommand(`${process.env.REACT_APP_API_URL}run-status-trunk`);
+        await executeCommand(
+          `${process.env.REACT_APP_API_URL}run-status-trunk`,
+          {
+            ip: localStorage.getItem("ssh_ip"),
+            password: localStorage.getItem("ssh_password")
+          }
+        );
+        
       
         // ✅ After backend finishes, navigate to trunk command viewer like others
         const encodedProduct = encodeURIComponent(product);
@@ -376,26 +402,26 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
       else if (title === "status aesvcs cti-link") {
         await executeCommand(`${process.env.REACT_APP_API_URL}get-status-aesvcs-cti-link`);
       
-        try {
-          const res = await fetch(`${process.env.REACT_APP_API_URL}get-status-aesvcs-cti-link`);
-          const json = await res.json();
+        // try {
+        //   const res = await fetch(`${process.env.REACT_APP_API_URL}get-status-aesvcs-cti-link`);
+        //   const json = await res.json();
       
-          if (json?.data && Array.isArray(json.data)) {
-            const hasAlert = json.data.some(
-              (row) =>
-                (row["Service State"] &&
-                  row["Service State"].toLowerCase() !== "established") ||
-                (row["Mnt Busy"] && row["Mnt Busy"].toLowerCase() !== "no")
-            );
+        //   if (json?.data && Array.isArray(json.data)) {
+        //     const hasAlert = json.data.some(
+        //       (row) =>
+        //         (row["Service State"] &&
+        //           row["Service State"].toLowerCase() !== "established") ||
+        //         (row["Mnt Busy"] && row["Mnt Busy"].toLowerCase() !== "no")
+        //     );
       
-            setBlinkingCards((prev) => ({
-              ...prev,
-              [title]: hasAlert && !acknowledged[title],
-            }));
-          }
-        } catch (err) {
-          console.error("Error updating blinking for CTI link:", err);
-        }
+        //     setBlinkingCards((prev) => ({
+        //       ...prev,
+        //       [title]: hasAlert && !acknowledged[title],
+        //     }));
+        //   }
+        // } catch (err) {
+        //   console.error("Error updating blinking for CTI link:", err);
+        // }
       }
       
       else if (title === "status aesvcs interface") {
@@ -785,10 +811,14 @@ Last Refreshed: {lastRefreshed[card.title]
               isRunningRef.current = true;
 
               try {
+                
                 sessionStorage.setItem("viewOnlyMode", "true");
+                sessionStorage.setItem("viewCommand", dialogOpen);
+                navigate(`/trunk-command/${encodedProduct}/${encodedTitle}`);
+
                 const encodedProduct = encodeURIComponent(product);
                 const encodedTitle = encodeURIComponent(dialogOpen);
-                navigate(`/trunk-command/${encodedProduct}/${encodedTitle}`);
+                
               } finally {
                 setDialogOpen(null);
                 isRunningRef.current = false;

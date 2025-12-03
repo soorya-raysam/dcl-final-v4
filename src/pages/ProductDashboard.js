@@ -17,6 +17,10 @@ export default function ProductDashboard() {
   const [alarmSeverity, setAlarmSeverity] = useState("Normal");
   const [criticalAlarmActive, setCriticalAlarmActive] = useState(false);
   const [criticalCertActive, setCriticalCertActive] = useState(false);
+  const [serverSeverity, setServerSeverity] = useState("Normal");
+  const [diskSeverity, setDiskSeverity] = useState("Normal");
+
+
 
   const [refreshTimer, setRefreshTimer] = useState(30);
   const [autoRefreshEnabled, setAutoRefreshEnabled] = useState(() => {
@@ -30,12 +34,33 @@ export default function ProductDashboard() {
 
   // --- Fetch Data ---
   const fetchData = () => {
-    fetch(`${process.env.REACT_APP_API_URL}get-live-health-data`)
+   
+    fetch(`${process.env.REACT_APP_API_URL}get-live-health-data`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        ip: localStorage.getItem("ssh_ip"),
+        password: localStorage.getItem("ssh_password"),
+      })
+    })
+
+    
       .then((res) => res.json())
       .then((json) => {
         setData(json);
         setLoading(false);
         analyzeSeverity(json);
+
+        // Disk Severity
+        const d = analyzeDiskSeverity(json);
+        setDiskSeverity(d.severity);
+        
+
+        // Server Status Severity
+        const srv = analyzeServerStatusSeverity(json);
+        setServerSeverity(srv.severity);  // ← store severity for server card
+
+
       })
       .catch((err) => {
         console.error("Failed to fetch dashboard data", err);
@@ -49,8 +74,25 @@ export default function ProductDashboard() {
   };
 
   useEffect(() => {
+    const viewOnly = sessionStorage.getItem("viewOnlyMode") === "true";
+  
+    if (viewOnly) {
+      sessionStorage.setItem("viewOnlyMode", "false");
+  
+      // Load cached dashboard data
+      const cached = sessionStorage.getItem("dashboardCache");
+      if (cached) {
+        console.log("📄 Dashboard view-only: loading cached data");
+        setData(JSON.parse(cached));
+        setLoading(false);
+        return;
+      }
+    }
+  
+    // Normal behavior → fetch fresh data
     fetchData();
   }, [product]);
+  
 
   // --- Countdown sync with localStorage ---
   useEffect(() => {
@@ -67,7 +109,84 @@ export default function ProductDashboard() {
     return () => window.removeEventListener("storage", handleStorage);
   }, []);
 
-  // --- Severity logic ---
+
+
+  // --- Severity logic for DISK UTIL ---
+
+  const analyzeDiskSeverity = (json) => {
+    try {
+      const dfh = json?.disk_utilisation?.["df -h"];
+      if (!dfh || !Array.isArray(dfh)) return { severity: "Normal", blinking: false };
+  
+      let severity = "Normal";
+  
+      for (const row of dfh) {
+        const usePct = parseInt(row["Use%"]);
+        if (usePct > 75) {
+          severity = "Critical";
+          break;
+        } else if (usePct >= 60) {
+          severity = "Major";
+        }
+      }
+  
+      const blinking =
+        !acknowledged && (severity === "Critical" || severity === "Major");
+  
+      // Sync to TableView
+      sessionStorage.setItem("cm_disk_severity", severity);
+      sessionStorage.setItem("cm_disk_blinking", blinking ? "true" : "false");
+  
+      return { severity, blinking };
+    } catch {
+      sessionStorage.setItem("cm_disk_severity", "Normal");
+      sessionStorage.setItem("cm_disk_blinking", "false");
+      return { severity: "Normal", blinking: false };
+    }
+  };
+
+
+
+  // --- Severity logic for SERVER STATUS ---
+  const analyzeServerStatusSeverity = (json) => {
+    try {
+      const rows = json?.server_status_table;
+      if (!rows || !Array.isArray(rows)) return { severity: "Normal", blinking: false };
+  
+      let majorCount = 0;
+  
+      for (const r of rows) {
+        if ((r["Major Alarms"] || "").toLowerCase() === "yes") {
+          majorCount++;
+        }
+      }
+  
+      let severity = "Normal";
+  
+      if (majorCount > 5) severity = "Critical";
+      else if (majorCount > 0) severity = "Major";
+  
+      const blinking =
+        !acknowledged && (severity === "Critical" || severity === "Major");
+  
+      // Sync to TableView
+      sessionStorage.setItem("cm_server_severity", severity);
+      sessionStorage.setItem("cm_server_blinking", blinking ? "true" : "false");
+  
+      return { severity, blinking };
+    } catch {
+      sessionStorage.setItem("cm_server_severity", "Normal");
+      sessionStorage.setItem("cm_server_blinking", "false");
+      return { severity: "Normal", blinking: false };
+    }
+  };
+  
+  
+
+
+
+
+  // --- Severity logic for ALARMS ---
   const analyzeSeverity = (json) => {
     const alarmsText = (json?.alarms || "").toLowerCase();
     const serverText = (json?.server_status || "").toLowerCase();
@@ -96,10 +215,20 @@ export default function ProductDashboard() {
       severity = "Minor";
     }
 
-    setAlarmSeverity(severity);
-    setCriticalAlarmActive(criticalActive);
-    setCriticalCertActive(false);
-  };
+  // --- Export state to TableView ---
+  const blinking =
+    !acknowledged && (severity === "Critical" || severity === "Major");
+
+  sessionStorage.setItem("cm_alarms_severity", severity);
+  sessionStorage.setItem("cm_alarms_blinking", blinking ? "true" : "false");
+
+  setAlarmSeverity(severity);
+  setCriticalAlarmActive(criticalActive);
+  setCriticalCertActive(false);
+};
+
+
+
 
   const handleAcknowledge = () => {
     setAcknowledged(true);
@@ -125,28 +254,36 @@ export default function ProductDashboard() {
   const cards = [
     {
       title: "System Uptime",
-      value: data?.system_uptime || "N/A",
+      // value: data?.system_uptime || "N/A",
       status: "Normal",
       path: "Uptime",
     },
     {
       title: "Disk Utilisation (df -h)",
-      value: data?.disk_utilisation?.["df -h"] ? "Available" : "N/A",
-      status: "Normal",
+      value: diskSeverity,
+      status: diskSeverity,
       path: "Disk Utilisation (df -h)",
+      blinking:
+        !acknowledged &&
+        (diskSeverity === "Critical" || diskSeverity === "Major"),
     },
+    
     {
       title: "Disk Utilisation (df -k)",
-      value: data?.disk_utilisation?.["df -k"] ? "Available" : "N/A",
+      value: data?.disk_utilisation?.["df -k"] ? "Normal" : "N/A",
       status: "Normal",
       path: "Disk Utilisation (df -k)",
     },
     {
       title: "Server Status",
-      value: "View details",
-      status: "Normal",
+      value: serverSeverity,
+      status: serverSeverity,
       path: "Server Status",
+      blinking: 
+        !acknowledged && 
+        (serverSeverity === "Critical" || serverSeverity === "Major"),
     },
+    
     {
       title: "Backup",
       value: "View details",
@@ -231,27 +368,38 @@ export default function ProductDashboard() {
 
       {/* --- Breadcrumb --- */}
       <div
-        style={{
-          display: "flex",
-          alignItems: "center",
-          justifyContent: "space-between",
-          marginBottom: "1rem",
-        }}
-      >
-        <div style={{ fontSize: "0.95rem", color: "#9ca3af" }}>
-          <span
-            style={{ cursor: "pointer", textDecoration: "underline" }}
-            onClick={() => navigate("/")}
-          >
-            🏠 Home
-          </span>{" "}
-          / {decodeURIComponent(product)} / <strong>Dashboard</strong>
-        </div>
-      </div>
+  style={{
+    display: "flex",
+    alignItems: "center",
+    justifyContent: "space-between",
+    marginBottom: "1rem",
+  }}
+>
+  <div
+    style={{
+      fontSize: "0.95rem",
+      color: "#9ca3af",
+    }}
+  >
+    <span
+      style={{ cursor: "pointer", textDecoration: "underline" }}
+      // onClick={() => navigate("/")}
+      onClick={() => {
+        sessionStorage.setItem("viewOnlyMode", "true");
+        navigate("/");
+      }}
+      
+    >
+      🏠 Home
+    </span>{" "}
+    / {decodeURIComponent(product)} / <strong>Dashboard</strong>
+  </div>
+</div>
 
-      <h1 className="dashboard-title">
-        {decodeURIComponent(product)} Dashboard
-      </h1>
+<h1 className="dashboard-title">
+  {decodeURIComponent(product)} Dashboard
+</h1>
+
 
       {/* --- KPI Summary --- */}
       <div className="kpi-grid">
@@ -266,12 +414,12 @@ export default function ProductDashboard() {
           </p>
         </div>
 
-        <div className={`kpi-card ${criticalCertActive ? "blinking-red" : ""}`}>
+        {/* <div className={`kpi-card ${criticalCertActive ? "blinking-red" : ""}`}>
           <h3>Critical Certificates</h3>
           <p style={{ color: criticalCertActive ? "#f87171" : "#9ca3af" }}>
             {criticalCertActive ? "1" : "0"}
           </p>
-        </div>
+        </div> */}
       </div>
 
       {/* --- Cards --- */}
