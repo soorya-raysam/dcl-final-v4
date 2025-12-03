@@ -113,6 +113,104 @@ def run_avaya_command(custom_command=None):
     print(f"✅ Total pages fetched: {page_counter}")
     return clean_output(full_output)
 
+
+
+
+
+
+
+from concurrent.futures import ThreadPoolExecutor, as_completed
+
+def run_status_single(ip, password, grp, timeout=30):
+    """
+    Run 'status trunk <grp>' on the given IP using its own Transport/session.
+    Returns cleaned output string or '' on error.
+    This does NOT touch module-level SAT_HOST / SAT_PASSWORD so it's thread-safe.
+    """
+    try:
+        def local_auth_handler(title, instructions, prompt_list):
+            return [password if "Password" in p[0] else "" for p in prompt_list]
+
+        transport = paramiko.Transport((ip, SAT_PORT))
+        transport.connect()
+        transport.auth_interactive(SAT_USERNAME, local_auth_handler)
+
+        channel = transport.open_session()
+        channel.get_pty()
+        channel.invoke_shell()
+        time.sleep(1)
+
+        # negotiate terminal type if requested
+        if channel.recv_ready():
+            banner = channel.recv(4096).decode(errors="ignore")
+            if "Terminal Type" in banner or "INVALID TERMINAL TYPE" in banner:
+                channel.send("VT220\n")
+                time.sleep(0.5)
+                if channel.recv_ready():
+                    channel.recv(4096)
+
+        channel.send("sat\n")
+        time.sleep(1)
+        if channel.recv_ready():
+            pre = channel.recv(4096).decode(errors="ignore")
+            if "Terminal Type" in pre:
+                channel.send("VT220\n")
+                time.sleep(0.5)
+                if channel.recv_ready():
+                    channel.recv(4096)
+
+        cmd = f"status trunk {grp}"
+        channel.send(cmd + "\n")
+        time.sleep(1)
+
+        full_output = ""
+        page_counter = 1
+        idle_wait = 0.6
+
+        while True:
+            time.sleep(idle_wait)
+            page_data = ""
+            while channel.recv_ready():
+                chunk = channel.recv(16384).decode(errors="ignore")
+                page_data += chunk
+                time.sleep(0.03)
+
+            if not page_data.strip():
+                break
+
+            full_output += page_data
+            # pagination
+            if "press next page" in page_data.lower():
+                channel.send("\x1b[18~")
+                page_counter += 1
+                time.sleep(0.4)
+            else:
+                break
+
+        try:
+            transport.close()
+        except Exception:
+            pass
+
+        return clean_output(full_output)
+    except Exception as e:
+        print(f"[run_status_single] error for grp {grp}: {e}")
+        return ""
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
 # ==============================
 # Parsers
 # ==============================
@@ -186,6 +284,59 @@ def run_status_trunk(ip, password, trunk):
     SAT_USERNAME = "dadmin"
     return run_avaya_command(f"status trunk {trunk}")
 
+
+
+def load_groups_from_fixed_csv():
+    """
+    Load trunk groups from your fixed hardcoded CSV used by list trunk-group.
+    CSV path: reports/report_list_trunk-group.csv
+    Returns: list of integers
+    """
+    csv_path = os.path.join(REPORT_DIR, "report_list_trunk-group.csv")
+
+    if not os.path.exists(csv_path):
+        print(f" No fixed trunk-group file found: {csv_path}")
+        return []
+
+    try:
+        df = pd.read_csv(csv_path)
+    except Exception as e:
+        print("Failed to read:", e)
+        return []
+
+    # Find the trunk group column (your previous file uses 2 columns)
+    col = None
+    for c in df.columns:
+        # look for numeric-only values column
+        if df[c].astype(str).str.match(r"^\d+$").any():
+            col = c
+            break
+
+    if col is None:
+        print("No numeric column found for trunk groups")
+        return []
+
+    groups = []
+    for v in df[col].values:
+        if pd.isna(v):
+            continue
+        try:
+            groups.append(int(str(v).strip()))
+        except:
+            pass
+
+    groups = sorted(list(set(groups)))
+    print("Loaded trunk groups:", groups)
+    return groups
+
+
+
+
+
+
+
+
+
 def run_status_trunk_all(ip, password):
     """
     Wrapper which reproduces the behaviour of main():
@@ -199,24 +350,47 @@ def run_status_trunk_all(ip, password):
     SAT_PASSWORD = password
     SAT_USERNAME = "dadmin"
 
-    print("🔍 Fetching trunk group list (via wrapper)...")
-    list_output = run_avaya_command("list trunk-group")
-    trunk_groups = parse_list_trunk_group(list_output)
+    print("🔍 Loading trunk group list...")
+    trunk_groups = load_groups_from_fixed_csv()
 
     if not trunk_groups:
         print("⚠️ No trunk groups found.")
         return None
 
+
+        # --- Concurrent fetcher ---
     all_dataframes = []
-    for grp in trunk_groups:
-        print(f"\n📡 Fetching status for trunk group {grp}...")
-        out = run_avaya_command(f"status trunk {grp}")
-        df = parse_status_trunk(out)
-        if not df.empty:
-            df.insert(0, "Trunk Group", grp)
-            all_dataframes.append(df)
-        else:
-            print(f"⚠️ No data parsed for trunk group {grp}")
+    max_workers = min(12, max(4, len(trunk_groups)))  # tune as needed
+    with ThreadPoolExecutor(max_workers=max_workers) as ex:
+        futures = {ex.submit(run_status_single, SAT_HOST if SAT_HOST else ip, SAT_PASSWORD if SAT_PASSWORD else password, grp): grp for grp in trunk_groups}
+
+        for fut in as_completed(futures):
+            grp = futures[fut]
+            try:
+                out = fut.result()
+                if not out:
+                    print(f"⚠️ Empty output for trunk group {grp}")
+                    continue
+                df = parse_status_trunk(out)
+                if not df.empty:
+                    df.insert(0, "Trunk Group", grp)
+                    all_dataframes.append(df)
+                else:
+                    print(f"⚠️ No data parsed for trunk group {grp}")
+            except Exception as e:
+                print(f"❌ Exception while fetching/parsing grp {grp}: {e}")
+
+
+    # all_dataframes = []
+    # for grp in trunk_groups:
+    #     print(f"\n📡 Fetching status for trunk group {grp}...")
+    #     out = run_avaya_command(f"status trunk {grp}")
+    #     df = parse_status_trunk(out)
+    #     if not df.empty:
+    #         df.insert(0, "Trunk Group", grp)
+    #         all_dataframes.append(df)
+    #     else:
+    #         print(f"⚠️ No data parsed for trunk group {grp}")
 
     if not all_dataframes:
         print("⚠️ No data collected for any trunk group.")
@@ -248,13 +422,24 @@ def run_status_trunk_all(ip, password):
     print(f"\n✅ Excel report created successfully:\n{os.path.abspath(excel_file)}")
     return os.path.abspath(excel_file)
 
+
+
+
+
+
+
+
+
+
+
+    
+
 # ==============================
 # Main Orchestrator (unchanged behaviour)
 # ==============================
 def main():
-    print("🔍 Fetching trunk group list...")
-    list_output = run_avaya_command("list trunk-group")
-    trunk_groups = parse_list_trunk_group(list_output)
+    print("🔍 Loading trunk group list...")
+    trunk_groups = load_groups_from_fixed_csv()
 
     if not trunk_groups:
         print("⚠️ No trunk groups found.")
