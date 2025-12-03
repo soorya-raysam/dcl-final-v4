@@ -55,16 +55,87 @@ export default function TrunkCommandView() {
         if (decodedTitle === "list measurements trunk-group summary yesterday-peak") {
           url = `${process.env.REACT_APP_API_URL}get-yesterday-peak-data`;
         } else if (decodedTitle === "list trunk-group") {
-          url = `${process.env.REACT_APP_API_URL}get-list-trunk-group-data`;
+          url = `${process.env.REACT_APP_API_URL}get-list-trunk-group-fixed`;
         } else if (decodedTitle === "monitor traffic trunk-groups") {
           url = `${process.env.REACT_APP_API_URL}get-monitor-traffic-trunk-groups-data`;
-        } else if (decodedTitle === "status trunk") {
-          url = `${process.env.REACT_APP_API_URL}get-status-trunk-all-data`;
-        } else if (decodedTitle.startsWith("status trunk")) {
-          const parts = decodedTitle.split(" ");
-          const trunk = parts.length >= 3 ? parts.slice(2).join(" ") : "";
-          url = `${process.env.REACT_APP_API_URL}get-status-trunk-data?trunk=${encodeURIComponent(trunk)}`;
-        } else if (decodedTitle === "list measurements outage-trunk last-hour") {
+        } 
+
+        else if (decodedTitle === "status trunk") {
+          // Do NOT auto-fetch for status trunk unless backend succeeded
+          const saved = sessionStorage.getItem(`latestData:${decodedTitle}`);
+        
+          if (!saved) {
+            // No successful POST → do NOT fetch anything
+            setError("No status trunk data available. Please run the command again.");
+            setLoading(false);
+            return;
+          }
+        
+          // We HAVE saved data from successful run-status-trunk
+          const json = JSON.parse(saved);
+        
+          setColumns(json.columns || []);
+          setTableData(json.data || []);
+          setExcelPath(json.excel_path || null);
+          setLoading(false);
+          return;
+        }
+        
+        
+        
+        // else if (decodedTitle === "status trunk") {
+        //   url = `${process.env.REACT_APP_API_URL}get-status-trunk-all-data`;
+        // } 
+        
+        
+        
+        // inside fetchData() before making fetch():
+if (decodedTitle === "status trunk") {
+  // Top-level "status trunk" should ONLY show results if a successful POST run saved them.
+  const saved = sessionStorage.getItem(`latestData:${decodedTitle}`) || sessionStorage.getItem("latestData:status trunk");
+  if (!saved) {
+    setError("No status trunk data available. Please run 'Status Trunk' from Trunk Details (Refresh & View).");
+    setLoading(false);
+    return;
+  }
+  // Use the saved result directly (no GET)
+  try {
+    const jsonSaved = JSON.parse(saved);
+    if (jsonSaved.error) {
+      setError("Status trunk run returned error: " + jsonSaved.error);
+      setLoading(false);
+      return;
+    }
+    setColumns(jsonSaved.columns || []);
+    setTableData(jsonSaved.data || []);
+    setExcelPath(jsonSaved.excel_path || null);
+  } catch (err) {
+    setError("Failed to parse saved status trunk data.");
+  }
+  setLoading(false);
+  return;
+}
+
+// For specific "status trunk <N>" pages, continue to fetch per-trunk GET:
+else if (decodedTitle.startsWith("status trunk")) {
+  const parts = decodedTitle.split(" ");
+  const trunk = parts.length >= 3 ? parts.slice(2).join(" ") : "";
+  url = `${process.env.REACT_APP_API_URL}get-status-trunk-data?trunk=${encodeURIComponent(trunk)}`;
+
+  // When calling GET, set fetchOptions as GET (no POST body)
+  fetchOptions = { method: "GET" };
+}
+
+
+        // else if (decodedTitle.startsWith("status trunk")) {
+        //   const parts = decodedTitle.split(" ");
+        //   const trunk = parts.length >= 3 ? parts.slice(2).join(" ") : "";
+        //   url = `${process.env.REACT_APP_API_URL}get-status-trunk-data?trunk=${encodeURIComponent(trunk)}`;
+        // } 
+        
+        
+        
+        else if (decodedTitle === "list measurements outage-trunk last-hour") {
           url = `${process.env.REACT_APP_API_URL}get-list-measurements-outage-trunk-last-hour`;
         } else if (decodedTitle === "status aesvcs cti-link") {
           url = `${process.env.REACT_APP_API_URL}get-status-aesvcs-cti-link`;

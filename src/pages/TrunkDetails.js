@@ -346,7 +346,7 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
 
       else if (title === "list trunk-group") {
         await executeCommand(
-          `${process.env.REACT_APP_API_URL}get-list-trunk-group-data`,
+          `${process.env.REACT_APP_API_URL}get-list-trunk-group-fixed`,
           {
               ip: localStorage.getItem("ssh_ip"),
               password: localStorage.getItem("ssh_password")
@@ -370,23 +370,59 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
     
       
 
+    else if (title === "status trunk") {
+      // Clear any previously saved result so stale output won't be reused.
+      try {
+        sessionStorage.removeItem(`latestData:${title}`);
+        sessionStorage.removeItem(`latestData:status trunk`); // defensive
+      } catch (e) {}
+    
+      // Run the POST to trigger backend to generate the combined status Excel.
+      const json = await executeCommand(`${process.env.REACT_APP_API_URL}run-status-trunk`);
+    
+      // If executeCommand returned undefined (it already alerted inside), treat as failure
+      if (!json) {
+        alert("status trunk run failed or was cancelled. No data will be shown.");
+        // Ensure no stale saved data remains
+        sessionStorage.removeItem(`latestData:${title}`);
+        return;
+      }
+    
+      // If backend returned an error payload, show and clean up
+      if (json.error) {
+        alert("Error running status trunk: " + json.error);
+        sessionStorage.removeItem(`latestData:${title}`);
+        return;
+      }
+    
+      // Success: store result under latestData:status trunk so TrunkCommandView picks it up.
+      // Some backends may return excel_path only; save the whole payload.
+      sessionStorage.setItem(`latestData:${title}`, JSON.stringify(json));
+    
+      // Navigate to viewer which will read sessionStorage and show results.
+      const encodedProduct = encodeURIComponent(product);
+      const encodedTitle = encodeURIComponent(title);
+      navigate(`/trunk-command/${encodedProduct}/${encodedTitle}`);
+    }
+    
+
       
-      else if (title === "status trunk") {
-        // 🔁 No user input, fully automatic
-        await executeCommand(
-          `${process.env.REACT_APP_API_URL}run-status-trunk`,
-          {
-            ip: localStorage.getItem("ssh_ip"),
-            password: localStorage.getItem("ssh_password")
-          }
-        );
+      // else if (title === "status trunk") {
+      //   // 🔁 No user input, fully automatic
+      //   await executeCommand(
+      //     `${process.env.REACT_APP_API_URL}run-status-trunk`,
+      //     {
+      //       ip: localStorage.getItem("ssh_ip"),
+      //       password: localStorage.getItem("ssh_password")
+      //     }
+      //   );
         
       
-        // ✅ After backend finishes, navigate to trunk command viewer like others
-        const encodedProduct = encodeURIComponent(product);
-        const encodedTitle = encodeURIComponent(title);
-        navigate(`/trunk-command/${encodedProduct}/${encodedTitle}`);
-      }
+      //   // ✅ After backend finishes, navigate to trunk command viewer like others
+      //   const encodedProduct = encodeURIComponent(product);
+      //   const encodedTitle = encodeURIComponent(title);
+      //   navigate(`/trunk-command/${encodedProduct}/${encodedTitle}`);
+      // }
       
       
       
