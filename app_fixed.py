@@ -2071,47 +2071,64 @@ def get_status_aesvcs_link():
 def get_status_cdr_link():
     import re
     import pandas as pd
-    from flask import jsonify
     import os, time
+    from flask import jsonify
 
     try:
         start = time.time()
-        output = run_avaya_command("status cdr-link")
 
-        # Debug (keeps original raw string visible in logs)
-        print("\n=== RAW DEBUG (repr) ===")
-        print(repr(output[:2000]))
-        print("=== END RAW DEBUG ===\n")
+        # --- RUN AVAYA COMMAND SAFELY ---
+        try:
+            output = run_avaya_command("status cdr-link")
+        except Exception as ee:
+            print("⚠️ SSH / run_avaya_command raised:", ee)
+            output = None
 
-        # Handle common "no data" messages
-        if re.search(r"No data in the system to list", output, re.IGNORECASE) or \
-           re.search(r"No records match", output, re.IGNORECASE):
+        # --- NO DATA / SSH FAILURE FALLBACK ---
+        if not output or not isinstance(output, str) or output.strip() == "":
+            print("ℹ️ No SAT output for status cdr-link.")
+
+            df = pd.DataFrame([{
+                "Message": "No data in the system to list or SAT did not respond"
+            }])
+
             os.makedirs("outputs", exist_ok=True)
-            excel_path = os.path.join("outputs", "status_cdr_link.xlsx")
-            df = pd.DataFrame([{"Message": "No data in the system to list"}])
+            today_folder = datetime.now().strftime("%Y-%m-%d")
+            out_dir = os.path.join("outputs", today_folder)
+            os.makedirs(out_dir, exist_ok=True)
+
+            excel_path = os.path.join(out_dir, "status_cdr_link_no_data.xlsx")
             df.to_excel(excel_path, index=False)
+
             log_command("status cdr-link", "Success", excel_path, "No data", 0)
-            return jsonify({"data": [], "columns": ["Message"], "excel_path": excel_path, "note": "No data in the system to list"})
 
-        # Isolate the CDR LINK STATUS section
-        m = re.search(r"CDR LINK STATUS(.*?)(?:Command:|$)", output, re.DOTALL | re.IGNORECASE)
-        section = m.group(1) if m else output
+            return jsonify({
+                "data": [],
+                "columns": ["Message"],
+                "excel_path": excel_path,
+                "note": "No data in the system to list or SAT did not respond"
+            }), 200
 
-        # Normalize spacing and lines
+        # ----------------------------------------------------------------------
+        # 📌 USE THE NEW ROBUST PARSER (same logic as test_status_cdr_link_fixed.py)
+        # ----------------------------------------------------------------------
+
+        raw = output
+
+        # Find the section between header → before Command:
+        m = re.search(r"CDR LINK STATUS(.*?)Command:", raw, re.DOTALL | re.IGNORECASE)
+        section = m.group(1) if m else raw
+
+        # normalize
         section = section.replace("\t", " ")
         section = re.sub(r"\r\n", "\n", section)
-        # collapse repeated blank lines to single blank line to simplify indexing
         section = re.sub(r"\n{2,}", "\n\n", section).strip()
 
-        # Remove clear footer/noise tokens
+        # cleanup footer
         section = re.sub(r"(?i)press\s+CANCEL.*", "", section)
         section = re.sub(r"(?i)command\s+successfully.*", "", section)
-        section = re.sub(r"\b\d+\s*\Z", "", section).strip()
+        section = section.strip()
 
-        # Prepare lines for lookups
-        lines = [ln.rstrip() for ln in section.splitlines()]
-
-        # Expected parameter names in order
         expected = [
             "Link State",
             "Date & Time",
@@ -2121,95 +2138,77 @@ def get_status_cdr_link():
             "Reason Code"
         ]
 
-        # Helper: given a label, find the line index containing 'Label:' (case-insensitive).
-        def find_label_line_idx(label):
-            pattern = re.compile(re.escape(label) + r"\s*:", re.IGNORECASE)
-            for idx, ln in enumerate(lines):
-                if pattern.search(ln):
-                    return idx
-            return None
+        # Label positions
+        positions = {}
+        for label in expected:
+            mm = re.search(re.escape(label) + r"\s*:", section, re.IGNORECASE)
+            positions[label] = mm.start() if mm else -1
+
+        present = [(lbl, pos) for lbl, pos in positions.items() if pos >= 0]
+        if not present:
+            print("⚠️ Could not detect labels.")
+            return jsonify({"error": "Could not detect expected CDR link parameters"}), 500
+
+        present.sort(key=lambda x: x[1])
+
+        # Extract chunks
+        label_chunks = {}
+        for i, (label, pos) in enumerate(present):
+            start_pos = pos
+            end_pos = present[i+1][1] if i+1 < len(present) else len(section)
+            chunk = section[start_pos:end_pos].strip()
+            chunk = re.sub(re.escape(label) + r"\s*:\s*", "", chunk, flags=re.IGNORECASE).strip()
+            label_chunks[label] = chunk
+
+        # collapse into one-line and split by large spacing
+        def split_primary_secondary(text):
+            if not text.strip():
+                return "", ""
+            one = re.sub(r"\s*\n\s*", " ", text).strip()
+            tokened = re.sub(r" {2,}", " ||| ", one)  # replace 2+ spaces with token
+            parts = [p.strip() for p in tokened.split("|||") if p.strip()]
+            primary = parts[0] if parts else ""
+            secondary = parts[1] if len(parts) >= 2 else ""
+            return primary, secondary
 
         rows = []
         for label in expected:
-            idx = find_label_line_idx(label)
-            primary = ""
-            secondary = ""
-            if idx is not None:
-                # get the content after the colon on the same line (if any)
-                line = lines[idx]
-                after = re.sub(r"(?i)^.*?\:\s*", "", line).strip()
-                if after:
-                    # If two columns separated by 2+ spaces -> split
-                    parts = re.split(r"\s{2,}", after)
-                    if len(parts) >= 2:
-                        primary = parts[0].strip()
-                        secondary = parts[1].strip()
-                    else:
-                        # single token on the same line — treat as primary
-                        primary = after.strip()
-                        # Try to see if there's a secondary on the same physical line further right
-                        # (some outputs have aligned columns with many spaces; attempt a broader split)
-                        if re.search(r"\s{3,}", line):
-                            parts2 = re.split(r"\s{3,}", line)
-                            # parts2 may include the label itself; remove first fragment that contains label
-                            if len(parts2) >= 2:
-                                # pick last two fragments as primary/secondary if they look like values
-                                cand = [p.strip() for p in parts2 if p.strip() and not re.search(r"(?i)^" + re.escape(label) + r"\s*:", p)]
-                                if len(cand) >= 2:
-                                    primary, secondary = cand[-2], cand[-1]
-                else:
-                    # No content after colon — check the next non-empty line for values
-                    j = idx + 1
-                    while j < len(lines) and lines[j].strip() == "":
-                        j += 1
-                    if j < len(lines):
-                        nextline = lines[j].strip()
-                        parts = re.split(r"\s{2,}", nextline)
-                        if len(parts) >= 2:
-                            primary = parts[0].strip()
-                            secondary = parts[1].strip()
-                        else:
-                            # fallback: maybe values are on the next line separated by multiple spaces
-                            primary = nextline.strip()
-                            # Attempt to extract second column from same nextline using big gap heuristic
-                            if re.search(r"\s{3,}", lines[j]):
-                                cand = [p.strip() for p in re.split(r"\s{3,}", lines[j]) if p.strip()]
-                                if len(cand) >= 2:
-                                    primary, secondary = cand[0], cand[1]
+            primary, secondary = split_primary_secondary(label_chunks.get(label, ""))
+            rows.append({
+                "Parameter": label,
+                "Primary": primary,
+                "Secondary": secondary
+            })
 
-            else:
-                # label not found — leave both empty
-                primary = ""
-                secondary = ""
-
-            # final cleanup (strip trailing numeric footers etc.)
-            primary = re.sub(r"\b\d+\b\s*$", "", primary).strip()
-            secondary = re.sub(r"\b\d+\b\s*$", "", secondary).strip()
-
-            rows.append({"Parameter": label, "Primary": primary, "Secondary": secondary})
-
-        # Build DataFrame, save Excel and return JSON
         df = pd.DataFrame(rows, columns=["Parameter", "Primary", "Secondary"])
-        df = df.replace({pd.NA: None, pd.NaT: None, float("nan"): None})
 
+        # --- SAVE EXCEL ---
         os.makedirs("outputs", exist_ok=True)
-        today_folder = datetime.now().strftime("%Y-%m-%d")
-        os.makedirs(os.path.join("outputs", today_folder), exist_ok=True)
-        timestamp = datetime.now().strftime("%H-%M-%S")
-        excel_path = os.path.join("outputs", today_folder, f"status_cdr_link_{timestamp}.xlsx")
-
+        today = datetime.now().strftime("%Y-%m-%d")
+        out_dir = os.path.join("outputs", today)
+        os.makedirs(out_dir, exist_ok=True)
+        ts = datetime.now().strftime("%H-%M-%S")
+        excel_path = os.path.join(out_dir, f"status_cdr_link_{ts}.xlsx")
         df.to_excel(excel_path, index=False)
 
         duration = round(time.time() - start, 2)
         log_command("status cdr-link", "Success", excel_path, f"{len(df)} rows", duration)
-        print(f"✅ Parsed {len(df)} rows → Excel: {excel_path}")
 
-        return jsonify({"data": df.to_dict(orient="records"), "columns": df.columns.tolist(), "excel_path": excel_path})
+        print(f"✅ Parsed CDR LINK successfully → {excel_path}")
+
+        return jsonify({
+            "data": df.to_dict(orient="records"),
+            "columns": df.columns.tolist(),
+            "excel_path": excel_path
+        }), 200
 
     except Exception as e:
         print("❌ Error in status cdr-link:", e)
         log_command("status cdr-link", "Failed", None, str(e), 0)
         return jsonify({"error": str(e)}), 500
+
+
+
 
 
 
