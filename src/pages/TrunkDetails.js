@@ -69,7 +69,7 @@ const [blinkingCards, setBlinkingCards] = useState(() => {
     { title: "status media-processor all" },
     { title: "status aesvcs interface" },
     { title: "status aesvcs link" },
-    //{ title: "status cdr-link" },
+    { title: "status cdr-link" },
 
 
 
