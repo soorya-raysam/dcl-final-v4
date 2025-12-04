@@ -1502,11 +1502,37 @@ def get_list_survivable_processor_data():
         start = time.time()
         print("⚙️ Running Avaya command: list survivable-processor")
 
-        output = run_avaya_command("list survivable-processor")
+        # --- Replace the call + early-check with this block inside get_list_survivable_processor_data ---
 
-        if not output or len(output.strip()) == 0:
-            print("❌ No output from Avaya command!")
-            return jsonify({"error": "No output from Avaya command"}), 500
+        try:
+            # run command — guard against SSH exceptions or None returns
+            try:
+                output = run_avaya_command("list survivable-processor")
+            except Exception as ssh_err:
+                print("⚠️ SSH/run_avaya_command raised:", ssh_err)
+                output = None
+
+            # If output is missing or not a string → return a friendly no-data JSON (200)
+            if not output or not isinstance(output, str) or output.strip() == "":
+                print("ℹ️ list survivable-processor returned no output or SSH failed.")
+                os.makedirs("outputs", exist_ok=True)
+                # create a tiny no-data Excel so UI download still works
+                df = pd.DataFrame([{"Message": "No data in the system to list or SAT did not respond"}])
+                excel_path = os.path.join("outputs", "list_survivable_processor_no_data.xlsx")
+                df.to_excel(excel_path, index=False)
+                # Log as success (so command_logs reflect attempted run) but note 'No data'
+                log_command("list survivable-processor", "Success", excel_path, "No data", 0)
+                return jsonify({
+                    "data": [],
+                    "columns": ["Message"],
+                    "excel_path": excel_path,
+                    "note": "No data in the system to list or SAT did not respond"
+                }), 200
+
+        except Exception as e:
+            # keep outer exception handling intact; will be caught by your route's outer try/except
+            raise
+
 
         cleaned_lines = []
         for line in output.splitlines():
