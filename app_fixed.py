@@ -1367,67 +1367,100 @@ def get_status_aesvcs_cti_link():
     import re
     import pandas as pd
     import os, time
+    from datetime import datetime
+    from flask import jsonify
 
     try:
         start = time.time()
         print("⚙️ Running Avaya command: status aesvcs cti-link")
 
-        output = run_avaya_command("status aesvcs cti-link")
+        # --- SAFE SSH call wrapper (prevents NoneType crashes) ---
+        try:
+            output = run_avaya_command("status aesvcs cti-link")
+        except Exception as ssh_err:
+            print("⚠️ SSH/run_avaya_command raised:", ssh_err)
+            output = None
 
-        if not output or len(output.strip()) == 0:
-            return jsonify({"error": "No output from Avaya command"}), 500
+        # If output is None or empty → return friendly no-data JSON (200)
+        if not output or not isinstance(output, str) or output.strip() == "":
+            print("ℹ️ status aesvcs cti-link returned no output or SAT did not respond.")
+            os.makedirs("outputs", exist_ok=True)
 
-        # ✅ Filter out non-data lines
-        cleaned_lines = []
-        for line in output.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if re.search(r"Page\s+\d+", line, re.IGNORECASE):
-                continue
-            if "AE SERVICES CTI LINK STATUS" in line.upper():
-                continue
-            if "press" in line.lower() or "Command" in line or "CANCEL" in line:
-                continue
-            if any(
-                hdr in line
-                for hdr in ["CTI", "Version", "Busy", "Server", "State", "Msgs"]
-            ):
-                continue
+            df = pd.DataFrame([{
+                "Message": "No data in the system to list or SAT did not respond"
+            }])
 
-            if re.match(r"^\d+", line):  # data lines start with a number
-                clean = re.sub(r"\s+", " ", line.strip())
-                cleaned_lines.append(clean)
+            excel_path = os.path.join("outputs", "status_aesvcs_cti_link_no_data.xlsx")
+            df.to_excel(excel_path, index=False)
 
-        if not cleaned_lines:
+            log_command("status aesvcs cti-link", "Success", excel_path, "No data", 0)
+
+            # Return UI-friendly shape (empty table but not an error)
+            return jsonify({
+                "data": [],
+                "columns": ["Message"],
+                "excel_path": excel_path,
+                "note": "No data in the system to list or SAT did not respond"
+            }), 200
+
+
+        lines = output.splitlines()
+
+        # 1) Find header index robustly (line containing "CTI" and "Version")
+        header_idx = None
+        for i, ln in enumerate(lines):
+            if re.search(r"\bCTI\b", ln, re.IGNORECASE) and re.search(r"\bVersion\b", ln, re.IGNORECASE):
+                # assume next line is the sub-header (the column names), then actual rows
+                header_idx = i
+                break
+
+        # If header not found, fall back to scanning all lines for numeric-start rows
+        start_scan_idx = header_idx + 2 if header_idx is not None else 0
+
+        # Regex to parse a proper data row (7 expected groups)
+        row_re = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s*$")
+
+        cleaned_rows = []
+        for ln in lines[start_scan_idx:]:
+            if not ln or ln.strip() == "":
+                continue
+            # skip known noise/footer lines
+            if re.search(r"Page\s+\d+", ln, re.IGNORECASE):
+                continue
+            if "press" in ln.lower() or "command" in ln or "CANCEL" in ln:
+                continue
+            # If line begins with a number (CTI Link), try to parse it
+            if re.match(r"^\s*\d+", ln):
+                # normalize spaces (but keep content)
+                candidate = re.sub(r"\s+", " ", ln.strip())
+                m = row_re.match(candidate)
+                if m:
+                    cleaned_rows.append([
+                        m.group(1),
+                        m.group(2),
+                        m.group(3),
+                        m.group(4),
+                        m.group(5),
+                        m.group(6),
+                        m.group(7),
+                    ])
+                else:
+                    # fallback: tokenize and try to produce 7 columns (preserve graceful behavior)
+                    parts = re.split(r"\s+", candidate)
+                    # attempt to repair common split of AE server like "aes 7038" -> "aes7038"
+                    if len(parts) >= 5 and parts[3] == "aes" and re.match(r"^\d+$", parts[4]):
+                        parts[3] = parts[3] + parts[4]
+                        del parts[4]
+                    # pad or truncate to 7 columns
+                    if len(parts) < 7:
+                        parts += [""] * (7 - len(parts))
+                    elif len(parts) > 7:
+                        parts = parts[:7]
+                    cleaned_rows.append(parts)
+
+        if not cleaned_rows:
             print("⚠️ No valid CTI link data found.")
             return jsonify({"error": "No valid CTI link data found"}), 500
-
-        # ✅ Parse each data row correctly (7 columns)
-        data_rows = []
-        for line in cleaned_lines:
-            # ✅ Fix known merge patterns (10no → 10 no, aes7038 → aes7038)
-            line = re.sub(r"(\d{2})(no)", r"\1 \2", line)  # fixes 10no
-            line = re.sub(r"(\baes)(\d+)\b", r"\1\2", line)  # keeps aes7038 together
-            line = re.sub(r"\s+", " ", line.strip())
-
-            # Split into tokens
-            parts = re.split(r"\s+", line)
-
-            # Re-join aes7038 if still split accidentally
-            if len(parts) >= 5 and parts[3] == "aes" and re.match(r"^\d+$", parts[4]):
-                parts[3] = parts[3] + parts[4]
-                del parts[4]
-
-
-            # Expected 7 columns: CTI Link, Version, Mnt Busy, AE Server, State, Msgs Sent, Msgs Rcvd
-            if len(parts) < 7:
-                parts += [""] * (7 - len(parts))
-            elif len(parts) > 7:
-                parts = parts[:7]
-
-            data_rows.append(parts)
-
 
         columns = [
             "CTI Link",
@@ -1439,8 +1472,8 @@ def get_status_aesvcs_cti_link():
             "Msgs Rcvd",
         ]
 
-        # ✅ Build DataFrame
-        df = pd.DataFrame(data_rows, columns=columns)
+        # Build DataFrame exactly as before
+        df = pd.DataFrame(cleaned_rows, columns=columns)
         df = df.replace({pd.NA: None, pd.NaT: None, float("nan"): None})
 
         os.makedirs("outputs", exist_ok=True)
@@ -1451,9 +1484,7 @@ def get_status_aesvcs_cti_link():
 
         df.to_excel(excel_path, index=False)
 
-        #
-
-        # ✅ Log success
+        # ✅ Log success (keeps your exact logging signature)
         duration = round(time.time() - start, 2)
         log_command("status aesvcs cti-link", "Success", excel_path, f"{len(df)} rows", duration)
 
@@ -1461,12 +1492,10 @@ def get_status_aesvcs_cti_link():
         for row in df.to_dict(orient="records"):
             print(row)
 
-
         print("=== DEBUG FINAL PARSED CTI LINK ROWS ===")
         for row in df.to_dict(orient="records"):
             print(row)
         print("========================================")
-
 
         return jsonify({
             "data": df.to_dict(orient="records"),
@@ -1478,6 +1507,7 @@ def get_status_aesvcs_cti_link():
         print(f"❌ Error in status aesvcs cti-link: {e}")
         log_command("status aesvcs cti-link", "Failed", None, str(e), 0)
         return jsonify({"error": str(e)}), 500
+
 
 
 
