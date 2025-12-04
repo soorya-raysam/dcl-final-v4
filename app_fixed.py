@@ -2094,19 +2094,22 @@ def get_status_cdr_link():
             return jsonify({"data": [], "columns": ["Message"], "excel_path": excel_path, "note": "No data in the system to list"})
 
         # Isolate the CDR LINK STATUS section
-        m = re.search(r"CDR LINK STATUS(.*?)Command:", output, re.DOTALL | re.IGNORECASE)
+        m = re.search(r"CDR LINK STATUS(.*?)(?:Command:|$)", output, re.DOTALL | re.IGNORECASE)
         section = m.group(1) if m else output
 
-        # Normalize spacing but keep long gaps that might indicate a column gap
+        # Normalize spacing and lines
         section = section.replace("\t", " ")
         section = re.sub(r"\r\n", "\n", section)
-        section = re.sub(r"\n{2,}", "\n", section).strip()
+        # collapse repeated blank lines to single blank line to simplify indexing
+        section = re.sub(r"\n{2,}", "\n\n", section).strip()
 
-        # Remove clear footer/noise tokens (7 8, "Command successfully completed", etc.)
+        # Remove clear footer/noise tokens
         section = re.sub(r"(?i)press\s+CANCEL.*", "", section)
         section = re.sub(r"(?i)command\s+successfully.*", "", section)
-        section = re.sub(r"\b\d+\s*\Z", "", section)  # trailing single numbers like 7 8
-        section = section.strip()
+        section = re.sub(r"\b\d+\s*\Z", "", section).strip()
+
+        # Prepare lines for lookups
+        lines = [ln.rstrip() for ln in section.splitlines()]
 
         # Expected parameter names in order
         expected = [
@@ -2118,166 +2121,72 @@ def get_status_cdr_link():
             "Reason Code"
         ]
 
-        # Build a map of label -> index positions in the section
-        positions = {}
-        lower_s = section
-        for label in expected:
-            loc = re.search(re.escape(label) + r"\s*:", lower_s, re.IGNORECASE)
-            positions[label] = loc.start() if loc else -1
+        # Helper: given a label, find the line index containing 'Label:' (case-insensitive).
+        def find_label_line_idx(label):
+            pattern = re.compile(re.escape(label) + r"\s*:", re.IGNORECASE)
+            for idx, ln in enumerate(lines):
+                if pattern.search(ln):
+                    return idx
+            return None
 
-        present = [(label, pos) for label, pos in positions.items() if pos >= 0]
-        if not present:
-            print("⚠️ No expected labels found in CDR LINK STATUS section. Dumping raw section for debugging.")
-            os.makedirs("outputs", exist_ok=True)
-            debug_path = os.path.join("outputs", "status_cdr_link_raw.txt")
-            with open(debug_path, "w") as f:
-                f.write(section)
-            return jsonify({"error": "Could not detect labels in status cdr-link output", "debug_file": debug_path}), 500
-
-        present.sort(key=lambda x: x[1])
-
-        # For each label, take substring from its label position to next label position
-        label_chunks = {}
-        for i, (label, pos) in enumerate(present):
-            start_pos = pos
-            end_pos = present[i + 1][1] if i + 1 < len(present) else len(section)
-            chunk = section[start_pos:end_pos].strip()
-            # remove the label itself and colon from chunk
-            chunk = re.sub(re.escape(label) + r"\s*:\s*", "", chunk, flags=re.IGNORECASE).strip()
-            label_chunks[label] = chunk
-
-        # Helper: extract primary value for each chunk (prefer strong 3+ space split, else left-most tokens)
-        def extract_primary(chunk):
-            if not chunk:
-                return ""
-            parts = re.split(r"\s{3,}", chunk)
-            if len(parts) >= 1 and parts[0].strip():
-                return parts[0].strip()
-            # fallback to first token(s)
-            toks = chunk.split()
-            if not toks:
-                return ""
-            # If single token, that's primary
-            if len(toks) == 1:
-                return toks[0]
-            # otherwise return first half approx as primary
-            half = max(1, len(toks) // 2)
-            return " ".join(toks[:half]).strip()
-
-        # Build primary map (Parameter -> PrimaryValue)
-        primary_map = {}
-        for label in expected:
-            chunk = label_chunks.get(label, "")
-            primary = extract_primary(chunk)
-            # clean obvious label prefix artifacts
-            if primary and primary.lower().startswith(label.lower()):
-                primary = primary[len(label):].strip(" :")
-            primary_map[label] = primary
-
-        # Now: collect the remaining trailing text that likely contains the SECONDARY column values.
-        # Heuristic: look at the last label's chunk and remove its extracted primary — whatever remains is tail containing secondary values in order.
-        last_label = present[-1][0]
-        last_chunk = label_chunks.get(last_label, "")
-        last_primary = primary_map.get(last_label, "")
-        tail = last_chunk
-        if last_primary:
-            tail = tail[len(last_primary):].strip()
-        # Also append any stray content after the last label position in original section (safety)
-        last_pos = present[-1][1]
-        if last_pos < len(section):
-            extra_after = section[last_pos + len(last_chunk):].strip()
-            if extra_after:
-                tail = (tail + " " + extra_after).strip()
-
-        # Clean tail: remove leftover footer codes
-        tail = re.sub(r"(?i)command\s*:?.*$", "", tail).strip()
-        tail = re.sub(r"\b\d+\b\s*$", "", tail).strip()
-        tail = re.sub(r"\s{2,}", " ", tail).strip()
-
-        # Sequential pattern matching to extract secondary fields in expected order
-        # Patterns chosen to be forgiving for common formats:
-        #  - Link State: words (letters/space/hyphen)
-        #  - Date & Time: look for slash and colon groups (e.g. 0000/00/00 00:00:00 or 0000/00/0000:00:00)
-        #  - Forward/Backward Seq : integers
-        #  - CDR Buffer % Full: float-like (0.00 or 0.000)
-        #  - Reason Code: remainder
-        secondary_map = {lbl: "" for lbl in expected}
-        remaining = tail
-
-        def match_and_consume(pattern):
-            nonlocal remaining
-            if not remaining:
-                return None
-            m = re.match(pattern, remaining)
-            if not m:
-                return None
-            val = m.group(0).strip()
-            remaining = remaining[len(m.group(0)):].strip()
-            return val
-
-        # 1) Link State (words until we hit a date or big gap)
-        v = match_and_consume(r"^[A-Za-z][A-Za-z0-9\s\-/]{0,80}")
-        if v:
-            secondary_map["Link State"] = v
-
-        # 2) Date & Time
-        if remaining:
-            v = match_and_consume(r"^\d{4}/\d{2}/\d{2}[:\s]?\d{2}:\d{2}:\d{2}")
-            # Relaxed fallback (sometimes year field differs)
-            if not v:
-                v = match_and_consume(r"^\d{4}/\d{2}/\d{4}:\d{2}:\d{2}")
-            if v:
-                secondary_map["Date & Time"] = v
-
-        # 3) CDR Buffer / numeric tokens may appear next in various order. We'll try to extract floats and ints in order:
-        # Try to capture a float (buffer) from remaining
-        if remaining:
-            v = match_and_consume(r"^\d+\.\d+")
-            if v:
-                secondary_map["CDR Buffer % Full"] = v
-
-        # 4) Integers: Forward & Backward seq might be present as ints
-        if remaining:
-            v = match_and_consume(r"^\d+")
-            if v and not secondary_map["Forward Seq. No"]:
-                secondary_map["Forward Seq. No"] = v
-
-        if remaining:
-            v = match_and_consume(r"^\d+")
-            if v and not secondary_map["Backward Seq. No"]:
-                secondary_map["Backward Seq. No"] = v
-
-        # 5) If anything left and some fields still empty, try to assign words in order
-        if remaining:
-            # split remaining by double-spaces or single spaces as fallback
-            parts = re.split(r"\s{2,}", remaining)
-
-            # if no multi-space splits, fallback to whitespace tokens
-            if len(parts) == 1:
-                parts = remaining.split()
-            # Fill fields in expected order if empty
-            fill_order = ["Link State", "Date & Time", "Forward Seq. No", "Backward Seq. No", "CDR Buffer % Full", "Reason Code"]
-            idx = 0
-            for fld in fill_order:
-                if secondary_map.get(fld) == "" and idx < len(parts):
-                    secondary_map[fld] = parts[idx].strip()
-                    idx += 1
-
-        # Build rows in the canonical order
         rows = []
         for label in expected:
-            primary = primary_map.get(label, "")
-            secondary = secondary_map.get(label, "")
+            idx = find_label_line_idx(label)
+            primary = ""
+            secondary = ""
+            if idx is not None:
+                # get the content after the colon on the same line (if any)
+                line = lines[idx]
+                after = re.sub(r"(?i)^.*?\:\s*", "", line).strip()
+                if after:
+                    # If two columns separated by 2+ spaces -> split
+                    parts = re.split(r"\s{2,}", after)
+                    if len(parts) >= 2:
+                        primary = parts[0].strip()
+                        secondary = parts[1].strip()
+                    else:
+                        # single token on the same line — treat as primary
+                        primary = after.strip()
+                        # Try to see if there's a secondary on the same physical line further right
+                        # (some outputs have aligned columns with many spaces; attempt a broader split)
+                        if re.search(r"\s{3,}", line):
+                            parts2 = re.split(r"\s{3,}", line)
+                            # parts2 may include the label itself; remove first fragment that contains label
+                            if len(parts2) >= 2:
+                                # pick last two fragments as primary/secondary if they look like values
+                                cand = [p.strip() for p in parts2 if p.strip() and not re.search(r"(?i)^" + re.escape(label) + r"\s*:", p)]
+                                if len(cand) >= 2:
+                                    primary, secondary = cand[-2], cand[-1]
+                else:
+                    # No content after colon — check the next non-empty line for values
+                    j = idx + 1
+                    while j < len(lines) and lines[j].strip() == "":
+                        j += 1
+                    if j < len(lines):
+                        nextline = lines[j].strip()
+                        parts = re.split(r"\s{2,}", nextline)
+                        if len(parts) >= 2:
+                            primary = parts[0].strip()
+                            secondary = parts[1].strip()
+                        else:
+                            # fallback: maybe values are on the next line separated by multiple spaces
+                            primary = nextline.strip()
+                            # Attempt to extract second column from same nextline using big gap heuristic
+                            if re.search(r"\s{3,}", lines[j]):
+                                cand = [p.strip() for p in re.split(r"\s{3,}", lines[j]) if p.strip()]
+                                if len(cand) >= 2:
+                                    primary, secondary = cand[0], cand[1]
 
-            # Final safety cleanup: remove stray numeric footer tokens (like single 7 or 8)
+            else:
+                # label not found — leave both empty
+                primary = ""
+                secondary = ""
+
+            # final cleanup (strip trailing numeric footers etc.)
             primary = re.sub(r"\b\d+\b\s*$", "", primary).strip()
             secondary = re.sub(r"\b\d+\b\s*$", "", secondary).strip()
 
-            rows.append({
-                "Parameter": label,
-                "Primary": primary,
-                "Secondary": secondary
-            })
+            rows.append({"Parameter": label, "Primary": primary, "Secondary": secondary})
 
         # Build DataFrame, save Excel and return JSON
         df = pd.DataFrame(rows, columns=["Parameter", "Primary", "Secondary"])
@@ -2297,11 +2206,11 @@ def get_status_cdr_link():
 
         return jsonify({"data": df.to_dict(orient="records"), "columns": df.columns.tolist(), "excel_path": excel_path})
 
-
     except Exception as e:
         print("❌ Error in status cdr-link:", e)
         log_command("status cdr-link", "Failed", None, str(e), 0)
         return jsonify({"error": str(e)}), 500
+
 
 
 
