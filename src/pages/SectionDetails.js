@@ -252,68 +252,60 @@ export default function SectionDetails() {
 function parseServerStatus(raw) {
   if (!raw) return null;
 
+  // Normalize input
   const text = raw.replace(/\r/g, "");
   const lines = text.split("\n").map((l) => l.replace(/\u00A0/g, " "));
 
   // ----------------------------
-  // METADATA: look for top-level key: value fields
+  // METADATA: top-level key : value
   // ----------------------------
-  const metadataKeys = [
+  const metadataLabels = [
     "Cluster ID",
     "Duplication",
-    "Standby Busied\\?",
-    "Standby Refreshed\\?",
+    "Standby Busied?",
+    "Standby Refreshed?",
     "Standby Shadowing",
     "Duplication Link",
     "Elapsed Time since Init/Interchange"
   ];
   const metadata = {};
-  metadataKeys.forEach((k) => {
-    const re = new RegExp(k + "\\s*:\\s*(.+)", "i");
+  metadataLabels.forEach((label) => {
+    const re = new RegExp(label.replace(/\?/g, "\\?") + "\\s*:\\s*(.+)", "i");
     const m = text.match(re);
-    metadata[k.replace(/\s*\?$/, "")] = m ? m[1].trim() : ""; // store without trailing ? in key
+    metadata[label] = m ? m[1].trim() : "";
   });
 
-  // cluster quick extract (legacy)
+  // cluster quick extract
   const clusterMatch = text.match(/Cluster ID:\s*([^\s]+)/i);
-  const cluster = clusterMatch ? clusterMatch[1] : metadata["Cluster ID"] || "Unknown";
+  const cluster = clusterMatch ? clusterMatch[1] : (metadata["Cluster ID"] || "Unknown");
 
-  // find the "names" / two-column names line if present (big gap between two names)
-  let namesLineIndex = -1;
-  for (let i = 0; i < lines.length; i++) {
-    const ln = lines[i];
-    if (/\s{6,}/.test(ln) && ln.trim().length > 0) {
-      const gap = ln.match(/\s{6,}/);
-      const left = ln.slice(0, gap.index).trim();
-      const right = ln.slice(gap.index + gap[0].length).trim();
-      if (left && right) {
-        namesLineIndex = i;
-        break;
-      }
-    }
-  }
-
-  // helper to parse key:value lines into object
+  // ----------------------------
+  // Helpers
+  // ----------------------------
   const parseKeyValueLines = (arrLines) => {
+    // Parses lines like "ID: 001 (1)" or continuation lines and returns object
     const obj = {};
-    for (let l of arrLines) {
-      const line = l.trim();
+    for (let rawLine of arrLines) {
+      const line = rawLine.trim();
       if (!line) continue;
+      // key : value (allow many characters in key)
       const m = line.match(/^([A-Za-z0-9 #%\.\-\/()&]+)\s*:\s*(.*)$/);
       if (m) {
         const key = m[1].trim();
         const val = m[2].trim();
         obj[key] = val;
       } else {
-        // continuation heuristic: append to last key if present
-        const lastKey = Object.keys(obj).slice(-1)[0];
-        if (lastKey) obj[lastKey] = (obj[lastKey] + " " + line).trim();
+        // continuation -> append to last key
+        const keys = Object.keys(obj);
+        if (keys.length > 0) {
+          const last = keys[keys.length - 1];
+          obj[last] = (obj[last] + " " + line).trim();
+        }
       }
     }
     return obj;
   };
 
-  // ensure server table contains the standard columns we'll show (even if empty)
   const ensureStandardColumns = (obj) => {
     const required = [
       "ID",
@@ -332,21 +324,46 @@ function parseServerStatus(raw) {
     return obj;
   };
 
-  // CASE: two-column layout found
-  if (namesLineIndex >= 0) {
+  // ----------------------------
+  // Find candidate names line (two columns separated by a big gap)
+  // ----------------------------
+  let namesLineIndex = -1;
+  let splitIdx = -1;
+  for (let i = 0; i < lines.length; i++) {
+    const ln = lines[i];
+    if (!ln || !ln.trim()) continue;
+    // detect a large gap (6 or more spaces) — typical two-column divider
+    const gap = ln.match(/\s{6,}/);
+    if (gap) {
+      const left = ln.slice(0, gap.index).trim();
+      const right = ln.slice(gap.index + gap[0].length).trim();
+      if (left && right) {
+        namesLineIndex = i;
+        // choose split at start of right column (gap start + gap length)
+        splitIdx = gap.index + gap[0].length;
+        break;
+      }
+    }
+  }
+
+  // ----------------------------
+  // If two-column layout detected: attempt left/right parse
+  // ----------------------------
+  if (namesLineIndex >= 0 && splitIdx > 0) {
     const nameLine = lines[namesLineIndex];
+    // compute nice left/right names
     const gapMatch = nameLine.match(/\s{6,}/);
-    const splitIdx = gapMatch ? gapMatch.index + gapMatch[0].length : Math.floor(nameLine.length / 2);
+    const leftName = (gapMatch ? nameLine.slice(0, gapMatch.index).trim() : nameLine.slice(0, splitIdx).trim()) || "Server 1";
+    const rightName = (gapMatch ? nameLine.slice(gapMatch.index + gapMatch[0].length).trim() : nameLine.slice(splitIdx).trim()) || "Server 2";
 
-    const leftName = nameLine.slice(0, splitIdx).trim() || "Server 1";
-    const rightName = nameLine.slice(splitIdx).trim() || "Server 2";
-
+    // collect lines below namesLineIndex into left/right arrays
     const leftLines = [];
     const rightLines = [];
-
     for (let i = namesLineIndex + 1; i < lines.length; i++) {
       const ln = lines[i];
       if (!ln || !ln.trim()) continue;
+      // Ensure we don't go past typical table area: stop if we hit another top-level section
+      // (very permissive — user can adjust if needed)
       const leftPart = ln.length >= splitIdx ? ln.slice(0, splitIdx) : ln;
       const rightPart = ln.length > splitIdx ? ln.slice(splitIdx) : "";
       const leftTrim = leftPart.trim();
@@ -355,22 +372,52 @@ function parseServerStatus(raw) {
       if (rightTrim) rightLines.push(rightTrim);
     }
 
+    // parse both sides
     const leftObj = ensureStandardColumns(parseKeyValueLines(leftLines));
     const rightObj = ensureStandardColumns(parseKeyValueLines(rightLines));
 
-    const servers = [];
-    if (Object.keys(leftObj).length > 0) servers.push({ name: leftName, tableData: leftObj });
-    if (Object.keys(rightObj).length > 0) servers.push({ name: rightName, tableData: rightObj });
+    // detect whether rightObj is meaningful — if it's mostly empty, treat as single-table fallback
+    const countFilled = (o) => Object.values(o).reduce((acc, v) => acc + (v && v.toString().trim() ? 1 : 0), 0);
+    const leftFilled = countFilled(leftObj);
+    const rightFilled = countFilled(rightObj);
 
+    // If right has less than 3 filled fields OR right is dramatically smaller than left,
+    // assume this was not a real two-column data table and fall back to single-table parse.
+    if (rightFilled < 3 || rightFilled < Math.floor(leftFilled / 3)) {
+      // SINGLE-TABLE fallback: parse all subsequent lines (not split) using robust key:value scanning
+      const combined = [];
+      for (let i = namesLineIndex + 1; i < lines.length; i++) {
+        const ln = lines[i];
+        if (!ln || !ln.trim()) continue;
+        combined.push(ln.trim());
+      }
+      const singleTableObj = ensureStandardColumns(parseKeyValueLines(combined));
+      const cmMatch = text.match(/\b(cm[0-9a-z\-_]+)\b/i);
+      const cmName = cmMatch ? cmMatch[1] : leftName;
+      return {
+        cluster,
+        metadata,
+        cmNames: [cmName],
+        servers: [{ name: cmName, tableData: singleTableObj }]
+      };
+    }
+
+    // Otherwise, return both parsed tables
     return {
       cluster,
       metadata,
-      cmNames: servers.map((s) => s.name),
-      servers
+      cmNames: [leftName, rightName],
+      servers: [
+        { name: leftName, tableData: leftObj },
+        { name: rightName, tableData: rightObj }
+      ]
     };
   }
 
-  // FALLBACK: single-table parsing (old behavior, but with new columns ensured)
+  // ----------------------------
+  // FALLBACK: single-table parsing when two-column layout not detected
+  // ----------------------------
+  // collect only lines that look like key:value pairs relevant to server table
   const dataLines = [];
   for (const l of lines) {
     const trimmed = l.trim();
@@ -379,19 +426,27 @@ function parseServerStatus(raw) {
       dataLines.push(trimmed);
     }
   }
-  const tableData = ensureStandardColumns(parseKeyValueLines(dataLines));
+  // If none found using the strict filter, be lenient and include any coloned lines
+  if (dataLines.length === 0) {
+    for (const l of lines) {
+      const trimmed = l.trim();
+      if (!trimmed) continue;
+      if (trimmed.indexOf(":") !== -1) dataLines.push(trimmed);
+    }
+  }
 
-  // Also try to detect a cm name
-  const cmMatch = text.match(/\b(cm\d+)\b/i);
-  const cmName = cmMatch ? cmMatch[1] : "Unknown";
+  const tableData = ensureStandardColumns(parseKeyValueLines(dataLines));
+  const cmMatchSingle = text.match(/\b(cm[0-9a-z\-_]+)\b/i);
+  const cmNameSingle = cmMatchSingle ? cmMatchSingle[1] : "Unknown";
 
   return {
     cluster,
     metadata,
-    cmNames: [cmName],
-    servers: [{ name: cmName, tableData }]
+    cmNames: [cmNameSingle],
+    servers: [{ name: cmNameSingle, tableData }]
   };
 }
+
 
 
 
