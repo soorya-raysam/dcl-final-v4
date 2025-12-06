@@ -2108,6 +2108,88 @@ def get_status_aesvcs_link():
 
 
 
+# parser - CDR Link
+def parse_cdr_link_section(output):
+    start = time.time()
+
+    # Normalize spacing but keep long gaps that indicate column gap
+    section = output or ""
+    section = section.replace("\t", " ")
+    section = re.sub(r"\r\n", "\n", section)
+    # collapse repeated blank lines to single newline
+    section = re.sub(r"\n{2,}", "\n\n", section).strip()
+
+    # Remove footer/noise tokens (keep content safe)
+    section = re.sub(r"(?i)press\s+CANCEL.*", "", section)
+    section = re.sub(r"(?i)command\s+successfully.*", "", section)
+    section = section.strip()
+
+    expected = [
+        "Link State",
+        "Date & Time",
+        "Forward Seq. No",
+        "Backward Seq. No",
+        "CDR Buffer % Full",
+        "Reason Code"
+    ]
+
+    # Find positions of each label so we can extract the chunk reliably
+    positions = {}
+    for label in expected:
+        m = re.search(re.escape(label) + r"\s*:", section, re.IGNORECASE)
+        positions[label] = m.start() if m else -1
+
+    present = [(lbl, pos) for lbl, pos in positions.items() if pos >= 0]
+    if not present:
+        raise ValueError("Could not detect expected labels in CDR LINK STATUS output")
+
+    present.sort(key=lambda x: x[1])
+
+    # Extract chunk for each label (text from label to next label)
+    label_chunks = {}
+    for i, (label, pos) in enumerate(present):
+        start_pos = pos
+        end_pos = present[i+1][1] if i+1 < len(present) else len(section)
+        chunk = section[start_pos:end_pos].strip()
+        # remove the label and colon
+        chunk = re.sub(re.escape(label) + r"\s*:\s*", "", chunk, flags=re.IGNORECASE).strip()
+        label_chunks[label] = chunk
+
+    # Now for each chunk normalize internal whitespace and split by multiple spaces as column separator
+    def split_primary_secondary(chunk_text):
+        """
+        Return (primary, secondary) from a chunk.
+        Approach:
+          - Replace newlines with single space
+          - Replace runs of 2+ spaces with a separator token '|||'
+          - Split on token: left -> primary, right -> secondary (strip)
+        """
+        if not chunk_text or chunk_text.strip() == "":
+            return "", ""
+        # collapse internal multiple newlines/spaces, but preserve "2+ spaces" boundary
+        one_line = re.sub(r"\s*\n\s*", " ", chunk_text).strip()
+        # replace repeated spaces (2 or more) with a token
+        tokened = re.sub(r" {2,}", " ||| ", one_line)
+        parts = [p.strip() for p in tokened.split("|||")]
+        # parts may have surrounding separators; clean them
+        parts = [p for p in parts if p is not None]
+        # After split, primary should be first non-empty, secondary the next non-empty
+        primary = parts[0].strip() if len(parts) >= 1 else ""
+        secondary = parts[1].strip() if len(parts) >= 2 else ""
+        return primary, secondary
+
+    rows = []
+    for label in expected:
+        chunk = label_chunks.get(label, "")
+        primary, secondary = split_primary_secondary(chunk)
+        # Final cleanups
+        primary = primary.strip()
+        secondary = secondary.strip()
+        rows.append({"Parameter": label, "Primary": primary, "Secondary": secondary})
+
+    df = pd.DataFrame(rows, columns=["Parameter", "Primary", "Secondary"])
+    duration = round(time.time() - start, 2)
+    return rows
 
 
 
@@ -2123,7 +2205,25 @@ def get_status_cdr_link():
 
         # --- RUN AVAYA COMMAND SAFELY ---
         try:
-            output = run_avaya_command("status cdr-link")
+            #output = run_avaya_command("status cdr-link")
+            output = """
+CDR LINK STATUS
+
+               Primary                           Secondary
+               -------                           ---------
+Link State:    up                                up
+
+Date & Time:   2025/11/16 05:59:26               2025/11/16 05:49:31
+
+Forward Seq. No:     66                           66
+Backward Seq. No:    0                            0
+
+CDR Buffer % Full:   0.00                         0.00
+
+Reason Code:   OK                                OK
+
+Command successfully completed
+"""
         except Exception as ee:
             print("⚠️ SSH / run_avaya_command raised:", ee)
             output = None
@@ -2157,97 +2257,30 @@ def get_status_cdr_link():
         # 📌 USE THE NEW ROBUST PARSER (same logic as test_status_cdr_link_fixed.py)
         # ----------------------------------------------------------------------
 
-        raw = output
+        print("Output is",parse_cdr_link_section(output))
+        columns = ["Parameter", "Primary", "Secondary"]
+        df = pd.DataFrame(parse_cdr_link_section(output=output), columns=columns)
 
-        # Find the section between header → before Command:
-        m = re.search(r"CDR LINK STATUS(.*?)Command:", raw, re.DOTALL | re.IGNORECASE)
-        section = m.group(1) if m else raw
-
-        # normalize
-        section = section.replace("\t", " ")
-        section = re.sub(r"\r\n", "\n", section)
-        section = re.sub(r"\n{2,}", "\n\n", section).strip()
-
-        # cleanup footer
-        section = re.sub(r"(?i)press\s+CANCEL.*", "", section)
-        section = re.sub(r"(?i)command\s+successfully.*", "", section)
-        section = section.strip()
-
-        expected = [
-            "Link State",
-            "Date & Time",
-            "Forward Seq. No",
-            "Backward Seq. No",
-            "CDR Buffer % Full",
-            "Reason Code"
-        ]
-
-        # Label positions
-        positions = {}
-        for label in expected:
-            mm = re.search(re.escape(label) + r"\s*:", section, re.IGNORECASE)
-            positions[label] = mm.start() if mm else -1
-
-        present = [(lbl, pos) for lbl, pos in positions.items() if pos >= 0]
-        if not present:
-            print("⚠️ Could not detect labels.")
-            return jsonify({"error": "Could not detect expected CDR link parameters"}), 500
-
-        present.sort(key=lambda x: x[1])
-
-        # Extract chunks
-        label_chunks = {}
-        for i, (label, pos) in enumerate(present):
-            start_pos = pos
-            end_pos = present[i+1][1] if i+1 < len(present) else len(section)
-            chunk = section[start_pos:end_pos].strip()
-            chunk = re.sub(re.escape(label) + r"\s*:\s*", "", chunk, flags=re.IGNORECASE).strip()
-            label_chunks[label] = chunk
-
-        # collapse into one-line and split by large spacing
-        def split_primary_secondary(text):
-            if not text.strip():
-                return "", ""
-            one = re.sub(r"\s*\n\s*", " ", text).strip()
-            tokened = re.sub(r" {2,}", " ||| ", one)  # replace 2+ spaces with token
-            parts = [p.strip() for p in tokened.split("|||") if p.strip()]
-            primary = parts[0] if parts else ""
-            secondary = parts[1] if len(parts) >= 2 else ""
-            return primary, secondary
-
-        rows = []
-        for label in expected:
-            primary, secondary = split_primary_secondary(label_chunks.get(label, ""))
-            rows.append({
-                "Parameter": label,
-                "Primary": primary,
-                "Secondary": secondary
-            })
-
-        df = pd.DataFrame(rows, columns=["Parameter", "Primary", "Secondary"])
-
-        # --- SAVE EXCEL ---
         os.makedirs("outputs", exist_ok=True)
-        today = datetime.now().strftime("%Y-%m-%d")
-        out_dir = os.path.join("outputs", today)
-        os.makedirs(out_dir, exist_ok=True)
-        ts = datetime.now().strftime("%H-%M-%S")
-        excel_path = os.path.join(out_dir, f"status_cdr_link_{ts}.xlsx")
+        today_folder = datetime.now().strftime("%Y-%m-%d")
+        os.makedirs(os.path.join("outputs", today_folder), exist_ok=True)
+        timestamp = datetime.now().strftime("%H-%M-%S")
+        excel_path = os.path.join("outputs", today_folder, f"status_cdr_link{timestamp}.xlsx")
+
         df.to_excel(excel_path, index=False)
 
         duration = round(time.time() - start, 2)
         log_command("status cdr-link", "Success", excel_path, f"{len(df)} rows", duration)
 
-        print(f"✅ Parsed CDR LINK successfully → {excel_path}")
-
+        print(f"✅ Parsed {len(df)} cdr link rows → Excel: {excel_path}")
         return jsonify({
             "data": df.to_dict(orient="records"),
-            "columns": df.columns.tolist(),
+            "columns": columns,
             "excel_path": excel_path
-        }), 200
+        })
 
     except Exception as e:
-        print("❌ Error in status cdr-link:", e)
+        print(f"❌ Error in cdr link: {e}")
         log_command("status cdr-link", "Failed", None, str(e), 0)
         return jsonify({"error": str(e)}), 500
 
