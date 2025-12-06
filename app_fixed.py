@@ -1510,10 +1510,85 @@ def get_status_aesvcs_cti_link():
 
 
 
+# Parser - Survivable Processor
+def parse_survivable_processor_output(output):
 
+    if not output or not output.strip():
+        return []
 
+    cleaned_lines = []
+    for line in output.splitlines():
+        raw = line.rstrip()
+        if not raw.strip():
+            continue
+        if "SURVIVABLE" in raw or "Record Name" in raw or re.search(r"Number\s+IP", raw):
+            continue
+        if "Command successfully" in raw or "press" in raw.lower():
+            continue
+        if re.search(r"Page\s+\d+", raw):
+            continue
+        if "CANCEL" in raw:
+            continue
+        cleaned_lines.append(raw)
 
+    data_rows = []
+    i = 0
 
+    ip_re = re.compile(r"^\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})\s*$")
+
+    # Primary regex (improved)
+    primary_re = re.compile(
+        r"^\s*(\d+)\s+(.+?)\s+([A-Z0-9\-]+)\s+([ynYN])\s+([ynYN])\s*(.*?)\s+(\d+)\s*$",
+        re.IGNORECASE
+    )
+
+    while i < len(cleaned_lines):
+
+        line = cleaned_lines[i].lstrip()
+        m = primary_re.match(line)
+
+        if m:
+            rec_no = m.group(1).strip()
+            name = m.group(2).strip()
+            type_ = m.group(3).strip()
+            reg = m.group(4).strip().lower()
+            ack = m.group(5).strip().lower()
+            translations = m.group(6).strip()
+            net_rgn = m.group(7).strip()
+
+            # Next line may be IP address
+            ip_addr = ""
+            notes = ""
+            j = i + 1
+
+            if j < len(cleaned_lines) and ip_re.match(cleaned_lines[j].strip()):
+                ip_addr = ip_re.match(cleaned_lines[j].strip()).group(1)
+                j += 1
+                # optional note line ("No V6 Entry")
+                if j < len(cleaned_lines) and not re.match(r"^\d+", cleaned_lines[j].strip()):
+                    notes = cleaned_lines[j].strip()
+                    j += 1
+
+            row = {
+                "Record number": rec_no,
+                "Name/IP address": f"{name} {ip_addr}".strip(),
+                "Type": type_,
+                "Reg": reg,
+                "Ack": ack,
+                "Translations updated": translations,
+                "Net Rgn": net_rgn
+            }
+            if notes:
+                row["Name/IP address"] += f" ({notes})"
+
+            data_rows.append(row)
+            i = j
+            continue
+
+        # No match → skip
+        i += 1
+
+    return data_rows
 
 
 
@@ -1563,131 +1638,6 @@ def get_list_survivable_processor_data():
             # keep outer exception handling intact; will be caught by your route's outer try/except
             raise
 
-
-        cleaned_lines = []
-        for line in output.splitlines():
-            line = line.rstrip()
-            if not line or line.strip() == "":
-                continue
-            # Skip header/noise lines
-            if "SURVIVABLE" in line or "Record Name" in line or re.search(r"Number\s+IP", line):
-                continue
-            if "Command successfully" in line or "press" in line.lower():
-                continue
-            if re.search(r"Page\s+\d+", line, re.IGNORECASE):
-                continue
-            if "CANCEL" in line:
-                continue
-            cleaned_lines.append(line)
-
-        if not cleaned_lines:
-            return jsonify({"error": "No valid survivable-processor data found"}), 500
-
-        # --- Parse logic ---
-        data_rows = []
-        i = 0
-        ip_re = re.compile(r"^\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})\s*$")
-
-        # Primary regex: capture
-        # 1: record number
-        # 2: name (lazy)
-        # 3: type (caps/alnum/hyphen)
-        # 4: Reg (y/n)
-        # 5: Act (y/n)
-        # 6: translations updated (optional, may be empty)
-        # 7: net rgn (digits at end)
-        primary_re = re.compile(
-            r"^\s*(\d+)\s+(.+?)\s+([A-Z0-9\-]+)\s+([ynYN])\s+([ynYN])\s*(.*?)\s+(\d+)\s*$",
-            re.IGNORECASE
-        )
-
-        while i < len(cleaned_lines):
-            line = cleaned_lines[i].lstrip()
-
-            m = primary_re.match(line)
-            if m:
-                rec_no = m.group(1).strip()
-                name = m.group(2).strip()
-                type_ = m.group(3).strip()
-                reg = m.group(4).strip().lower()
-                ack = m.group(5).strip().lower()
-                translations = m.group(6).strip()
-                net = m.group(7).strip()
-
-                # Next line may be IP
-                ip_addr = ""
-                notes = ""
-                j = i + 1
-                if j < len(cleaned_lines) and ip_re.match(cleaned_lines[j].strip()):
-                    ip_addr = ip_re.match(cleaned_lines[j].strip()).group(1)
-                    j += 1
-                    # optional third line (notes like "No V6 Entry")
-                    if j < len(cleaned_lines) and not re.match(r"^\d+", cleaned_lines[j].strip()):
-                        notes = cleaned_lines[j].strip()
-                        j += 1
-
-                row = {
-                    "Record number": rec_no,
-                    "Name/IP address": f"{name} {ip_addr}".strip(),
-                    "Type": type_,
-                    "Reg": reg,
-                    "Ack": ack,
-                    "Translations updated": translations,
-                    "Net Rgn": net
-                }
-                if notes:
-                    row["Name/IP address"] += f" ({notes})"
-
-                data_rows.append(row)
-                i = j
-                continue
-
-            # Fallback: older, more tolerant parsing if primary regex fails
-            # (keeps behaviour similar to previous implementation)
-            parts = re.split(r"\s{2,}", line.strip())
-            if re.match(r"^\d+", parts[0]):
-                # attempt to salvage fields
-                rec_no = parts[0].strip()
-                name = parts[1].strip() if len(parts) > 1 else ""
-                type_ = parts[2].strip() if len(parts) > 2 else ""
-                reg = parts[3].strip().lower() if len(parts) > 3 else ""
-                ack = parts[4].strip().lower() if len(parts) > 4 else ""
-                translations = ""
-                net = ""
-                # pick translations/net if present at expected positions
-                if len(parts) >= 6:
-                    translations = parts[5].strip()
-                if len(parts) >= 7:
-                    net = parts[6].strip()
-
-                ip_addr = ""
-                notes = ""
-                j = i + 1
-                if j < len(cleaned_lines) and ip_re.match(cleaned_lines[j].strip()):
-                    ip_addr = ip_re.match(cleaned_lines[j].strip()).group(1)
-                    j += 1
-                    if j < len(cleaned_lines) and not re.match(r"^\d+", cleaned_lines[j].strip()):
-                        notes = cleaned_lines[j].strip()
-                        j += 1
-
-                row = {
-                    "Record number": rec_no,
-                    "Name/IP address": f"{name} {ip_addr}".strip(),
-                    "Type": type_,
-                    "Reg": reg,
-                    "Ack": ack,
-                    "Translations updated": translations,
-                    "Net Rgn": net
-                }
-                if notes:
-                    row["Name/IP address"] += f" ({notes})"
-                data_rows.append(row)
-                i = j
-                continue
-
-            # If nothing matched, skip this line
-            i += 1
-
         # --- Build DataFrame ---
         columns = [
             "Record number",
@@ -1698,7 +1648,7 @@ def get_list_survivable_processor_data():
             "Translations updated",
             "Net Rgn"
         ]
-        df = pd.DataFrame(data_rows, columns=columns)
+        df = pd.DataFrame(parse_survivable_processor_output(output=output), columns=columns)
 
         os.makedirs("outputs", exist_ok=True)
         today_folder = datetime.now().strftime("%Y-%m-%d")
