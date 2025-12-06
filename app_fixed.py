@@ -1355,7 +1355,42 @@ def get_list_measurements_outage_trunk_last_hour():
 
 
 
+# Parser - CTI Link
+def parse_cti_link(output):
+    lines = output.splitlines()
 
+    # Skip until header is detected
+    start_idx = None
+    for i, line in enumerate(lines):
+        if re.search(r"CTI\s+Version\s+Mnt", line):
+            start_idx = i + 2   # skip header + sub-header
+            break
+
+    if start_idx is None:
+        return {"error": "Header not found", "data": []}
+
+    rows = []
+    row_re = re.compile(
+        r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)"
+    )
+
+    for line in lines[start_idx:]:
+        m = row_re.match(line)
+        if not m:
+            continue  # skip garbage / empty / footer
+
+        row = {
+            "CTI Link": m.group(1),
+            "Version": m.group(2),
+            "Mnt Busy": m.group(3),
+            "AE Services Server": m.group(4),
+            "Service State": m.group(5),
+            "Msgs Sent": m.group(6),
+            "Msgs Rcvd": m.group(7)
+        }
+        rows.append(row)
+
+    return rows
 
 
 @app.route("/get-status-aesvcs-cti-link", methods=["GET", "POST"])
@@ -1377,6 +1412,7 @@ def get_status_aesvcs_cti_link():
         # --- SAFE SSH call wrapper (prevents NoneType crashes) ---
         try:
             output = run_avaya_command("status aesvcs cti-link")
+
         except Exception as ssh_err:
             print("⚠️ SSH/run_avaya_command raised:", ssh_err)
             output = None
@@ -1404,64 +1440,6 @@ def get_status_aesvcs_cti_link():
             }), 200
 
 
-        lines = output.splitlines()
-
-        # 1) Find header index robustly (line containing "CTI" and "Version")
-        header_idx = None
-        for i, ln in enumerate(lines):
-            if re.search(r"\bCTI\b", ln, re.IGNORECASE) and re.search(r"\bVersion\b", ln, re.IGNORECASE):
-                # assume next line is the sub-header (the column names), then actual rows
-                header_idx = i
-                break
-
-        # If header not found, fall back to scanning all lines for numeric-start rows
-        start_scan_idx = header_idx + 2 if header_idx is not None else 0
-
-        # Regex to parse a proper data row (7 expected groups)
-        row_re = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s*$")
-
-        cleaned_rows = []
-        for ln in lines[start_scan_idx:]:
-            if not ln or ln.strip() == "":
-                continue
-            # skip known noise/footer lines
-            if re.search(r"Page\s+\d+", ln, re.IGNORECASE):
-                continue
-            if "press" in ln.lower() or "command" in ln or "CANCEL" in ln:
-                continue
-            # If line begins with a number (CTI Link), try to parse it
-            if re.match(r"^\s*\d+", ln):
-                # normalize spaces (but keep content)
-                candidate = re.sub(r"\s+", " ", ln.strip())
-                m = row_re.match(candidate)
-                if m:
-                    cleaned_rows.append([
-                        m.group(1),
-                        m.group(2),
-                        m.group(3),
-                        m.group(4),
-                        m.group(5),
-                        m.group(6),
-                        m.group(7),
-                    ])
-                else:
-                    # fallback: tokenize and try to produce 7 columns (preserve graceful behavior)
-                    parts = re.split(r"\s+", candidate)
-                    # attempt to repair common split of AE server like "aes 7038" -> "aes7038"
-                    if len(parts) >= 5 and parts[3] == "aes" and re.match(r"^\d+$", parts[4]):
-                        parts[3] = parts[3] + parts[4]
-                        del parts[4]
-                    # pad or truncate to 7 columns
-                    if len(parts) < 7:
-                        parts += [""] * (7 - len(parts))
-                    elif len(parts) > 7:
-                        parts = parts[:7]
-                    cleaned_rows.append(parts)
-
-        if not cleaned_rows:
-            print("⚠️ No valid CTI link data found.")
-            return jsonify({"error": "No valid CTI link data found"}), 500
-
         columns = [
             "CTI Link",
             "Version",
@@ -1473,7 +1451,7 @@ def get_status_aesvcs_cti_link():
         ]
 
         # Build DataFrame exactly as before
-        df = pd.DataFrame(cleaned_rows, columns=columns)
+        df = pd.DataFrame(parse_cti_link(output=output), columns=columns)
         df = df.replace({pd.NA: None, pd.NaT: None, float("nan"): None})
 
         os.makedirs("outputs", exist_ok=True)
