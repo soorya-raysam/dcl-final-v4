@@ -2022,29 +2022,9 @@ def get_status_media_gateway():
 
     try:
         start = time.time()
-        #output = run_avaya_command("status media-gateways")
+        output = run_avaya_command("status media-gateways")
 
-        output = """
-ALARM SUMMARY      |    BUSY-OUT SUMMARY       |   H.248 LINK SUMMARY
-Major:  10         | Trunks: 180              | Links Down:  3     # Logins: 03
-Minor:  9          | Stations:  9             | Links Up:    38
-Warning: 720
 
-GATEWAY STATUS
-
-Alarms                       Alarms                      Alarms
-MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link
- 1   0   2   3   up    2   1   0   1   up    3   0   1   1   up
- 4   0   0   0   up    5   0   0   0   dn    6   2   1   0   up
- 7   1   0   0   up    8   0   3   2   up    9   0   0   0   dn
-
-# Sometimes the header repeats (should be skipped)
-MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link
-10  0   0   0   up    11  0   1   0   up    12  1   0   0   up
-13  0   0   0   dn    14  0   0   0   up
-
-# End of table
-"""
 
         print("\n=== DEBUG MEDIA-GATEWAY OUTPUT ===")
         print(repr(output[:2000]))
@@ -2118,7 +2098,67 @@ MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link
 
 
 
+# REGEX FOR EXTRACTING EACH MEDIA PROCESSOR BLOCK
+# ============================================================
 
+block_pattern = re.compile(
+    r"([0-9][A-Z][0-9]{2,3}\s+\S+\s+\d+\s+\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+\S+\s+\S+)"
+)
+
+
+# ============================================================
+# REGEX FOR PARSING A SINGLE BLOCK
+# ============================================================
+
+single_block_pattern = re.compile(
+    r"^\s*(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)$"
+)
+
+
+def parse_block(block_text):
+    """
+    Parse a block like:
+    1A05  TN2602   0  0  0  up  up  up B05  act
+    """
+    m = single_block_pattern.match(block_text.strip())
+    if not m:
+        return None
+
+    return {
+        "Slot": m.group(1),
+        "Code": m.group(2),
+        "Major": m.group(3),
+        "Minor": m.group(4),
+        "Warning": m.group(5),
+        "Peer": m.group(6),
+        "Control": m.group(7),
+        "Ethernet": m.group(8),
+        "Dup Slot": m.group(9),
+        "State": m.group(10)
+    }
+
+
+# ============================================================
+# MAIN PARSER TEST
+# ============================================================
+
+def parse_media_processors(text):
+    rows = []
+
+    for line in text.splitlines():
+        line = line.strip()
+        if not line:
+            continue
+
+        # Extract 0 / 1 / 2 processor blocks from line
+        blocks = block_pattern.findall(line)
+
+        for b in blocks:
+            parsed = parse_block(b)
+            if parsed:
+                rows.append(parsed)
+
+    return rows
 
 
 
@@ -2140,6 +2180,7 @@ def get_status_media_processor_all():
 
         # ✅ Run the Avaya command
         output = run_avaya_command("status media-processor all")
+
 
         # --- Optional Debug ---
         print("\n=== DEBUG MEDIA-PROCESSOR OUTPUT ===")
@@ -2168,46 +2209,27 @@ def get_status_media_processor_all():
             })
 
 
-        # ✅ Define known column headers for this command
+       # ------------ FIX: use the actual keys returned by parse_media_processors ------------
+        # parse_media_processors (from test file) returns dicts with these keys:
+        #   "Slot","Code","Major","Minor","Warning","Peer","Control","Ethernet","Dup Slot","State"
         columns = [
-            "Board",
-            "IP Address",
-            "Network Region",
-            "Link Status",
-            "Mode",
-            "VoIP Channels (Used/Avail)",
-            "Service State"
+            "Slot",
+            "Code",
+            "Major",
+            "Minor",
+            "Warning",
+            "Peer",
+            "Control",
+            "Ethernet",
+            "Dup Slot",
+            "State",
         ]
 
-        # ✅ Capture all valid data lines (usually start with board numbers or IPs)
-        data_lines = re.findall(r"(?m)^\s*\S+\s+.*", output)
-
-        # Filter out Avaya paging prompts
-        filtered_lines = [
-            line for line in data_lines
-            if not re.search(r"press\s+(CANCEL|NEXT PAGE|to quit)", line, re.IGNORECASE)
-        ]
-
-        if not filtered_lines:
-            print("❌ No valid media-processor data lines found.")
-            return jsonify({"error": "No valid processor data found"}), 500
-
-        # ✅ Regex-based flexible parser
-        parsed_rows = []
-        for line in filtered_lines:
-            line = re.sub(r"\s+", " ", line.strip())
-            # This pattern splits merged alphanumeric groups and keeps IPs intact
-            parts = re.findall(r"\d+\.\d+\.\d+\.\d+|[A-Za-z#/:\-\(\)]+|\d+", line)
-            parsed_rows.append(parts)
-
-        # ✅ Pad or truncate to expected columns
-        for row in parsed_rows:
-            row.extend([""] * (len(columns) - len(row)))
-            if len(row) > len(columns):
-                row[:] = row[:len(columns)]
-
-        # ✅ Build DataFrame
+        # Build DataFrame from the parser output using matching column names
+        parsed_rows = parse_media_processors(output)
         df = pd.DataFrame(parsed_rows, columns=columns)
+# -------------------------------------------------------------------------------------
+
         df = df.replace({pd.NA: None, pd.NaT: None, float("nan"): None})
 
         # ✅ Save Excel for UI download
@@ -2404,6 +2426,8 @@ def get_status_aesvcs_interface():
 
         
 
+        print("This is aesvcs interface output", output)
+
         columns = ["local_node", "enabled", "num_connections", "status"]
 
         # ✅ Create DataFrame
@@ -2599,6 +2623,8 @@ def get_status_aesvcs_link():
             }
             for r in raw_rows
         ]
+
+        print("This is status aesvcs link output", output)
 
         df = pd.DataFrame(mapped_rows, columns=columns)
 
