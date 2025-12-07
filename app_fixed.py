@@ -1289,7 +1289,7 @@ def get_list_measurements_outage_trunk_last_hour():
         import yesterday_peak
         yesterday_peak.SAT_HOST = ip
         yesterday_peak.SAT_PASSWORD = password
-        yesterday_peak.SAT_USERNAME = "dadmin"
+        yesterday_peak.SAT_USERNAME = "DCLWeb"
 
 
         # Run Avaya command
@@ -1393,6 +1393,8 @@ def parse_cti_link(output):
     return rows
 
 
+
+
 @app.route("/get-status-aesvcs-cti-link", methods=["GET", "POST"])
 def get_status_aesvcs_cti_link():
     """
@@ -1451,6 +1453,7 @@ def get_status_aesvcs_cti_link():
         ]
 
         # Build DataFrame exactly as before
+        print("CTI link output is: ", output)
         df = pd.DataFrame(parse_cti_link(output=output), columns=columns)
         df = df.replace({pd.NA: None, pd.NaT: None, float("nan"): None})
 
@@ -1626,6 +1629,8 @@ def get_list_survivable_processor_data():
             "Translations updated",
             "Net Rgn"
         ]
+
+        print("This is survivable processor output", output)
         df = pd.DataFrame(parse_survivable_processor_output(output=output), columns=columns)
 
         os.makedirs("outputs", exist_ok=True)
@@ -1652,6 +1657,86 @@ def get_list_survivable_processor_data():
         return jsonify({"error": str(e)}), 500
 
 
+# 3 functions to parse Media gateways command
+
+GATEWAY_CHUNK_RE = re.compile(r"\b(\d{1,3})\s+(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]+)\b")
+
+
+def extract_summary(text):
+    """
+    Extract top summary values (Major, Minor, Warning, Links Down, Links Up, Trunks, Stations, Logins).
+    This is heuristic-based and tolerant to different label orders.
+    """
+    summary = {}
+    # Common labels we try to capture
+    patterns = {
+        "Major": r"Major[:\s]+(\d+)",
+        "Minor": r"Minor[:\s]+(\d+)",
+        "Warning": r"Warning[:\s]+(\d+)",
+        "Links Down": r"Links Down[:\s]+(\d+)",
+        "Links Up": r"Links Up[:\s]+(\d+)",
+        "Trunks": r"Trunks[:\s]+(\d+)",
+        "Stations": r"Stations[:\s]+(\d+)",
+        "Logins": r"Logins[:\s]+(\d+)"
+    }
+    for key, pat in patterns.items():
+        m = re.search(pat, text, re.IGNORECASE)
+        summary[key] = int(m.group(1)) if m else None
+    return summary
+
+
+def parse_gateway_table(text):
+    """
+    Locate the 'GATEWAY STATUS' section and parse gateway rows.
+    Each physical table row can contain up to 3 gateway chunks; we find all matches
+    on each line and append them in order.
+    """
+    # Find the position of "GATEWAY STATUS"
+    m = re.search(r"^\s*GATEWAY\s+STATUS\b", text, flags=re.IGNORECASE | re.MULTILINE)
+    if not m:
+        # Try looser: look for a line that equals "GATEWAY STATUS" ignoring surrounding whitespace
+        m = re.search(r"\bGATEWAY STATUS\b", text, flags=re.IGNORECASE)
+    start_idx = m.end() if m else 0
+
+    # Take the part after the "GATEWAY STATUS" header
+    tail = text[start_idx:]
+
+    # Remove any repeated header lines (lines that contain the header tokens)
+    lines = []
+    for line in tail.splitlines():
+        if not line or line.strip().startswith("#"):
+            # stop or skip comments
+            continue
+        # skip header-looking lines that contain the column names
+        if re.search(r"\bMG\b|\bMjr\b|\bMnr\b|\bWng\b|\bLink\b", line, re.IGNORECASE):
+            continue
+        lines.append(line.rstrip())
+
+    gateways = []
+    for ln in lines:
+        # Find all gateway chunks in this line (up to 3)
+        for match in GATEWAY_CHUNK_RE.finditer(ln):
+            mg, mjr, mnr, wng, link = match.groups()
+            gateways.append({
+                "MG": int(mg),
+                "Major": int(mjr),
+                "Minor": int(mnr),
+                "Warning": int(wng),
+                "Link": link.lower()
+            })
+    return gateways
+
+
+def parse_status_media_gateways(sample_text):
+    """
+    High-level parser orchestrator.
+    Returns dict { summary: {...}, gateways: [...] }
+    """
+    summary = extract_summary(sample_text)
+    gateways = parse_gateway_table(sample_text)
+    return {"summary": summary, "gateways": gateways}
+
+
 
 
 
@@ -1667,7 +1752,29 @@ def get_status_media_gateway():
 
     try:
         start = time.time()
-        output = run_avaya_command("status media-gateway")
+        #output = run_avaya_command("status media-gateways")
+
+        output = """
+ALARM SUMMARY      |    BUSY-OUT SUMMARY       |   H.248 LINK SUMMARY
+Major:  10         | Trunks: 180              | Links Down:  3     # Logins: 03
+Minor:  9          | Stations:  9             | Links Up:    38
+Warning: 720
+
+GATEWAY STATUS
+
+Alarms                       Alarms                      Alarms
+MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link
+ 1   0   2   3   up    2   1   0   1   up    3   0   1   1   up
+ 4   0   0   0   up    5   0   0   0   dn    6   2   1   0   up
+ 7   1   0   0   up    8   0   3   2   up    9   0   0   0   dn
+
+# Sometimes the header repeats (should be skipped)
+MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link   MG  Mjr Mnr Wng Link
+10  0   0   0   up    11  0   1   0   up    12  1   0   0   up
+13  0   0   0   dn    14  0   0   0   up
+
+# End of table
+"""
 
         print("\n=== DEBUG MEDIA-GATEWAY OUTPUT ===")
         print(repr(output[:2000]))
@@ -1682,59 +1789,34 @@ def get_status_media_gateway():
             df.to_excel(excel_path, index=False)
             log_command("status media-gateway", "Success", excel_path, "No data", 0)
             return jsonify({
-                "summary": {},
+                #"summary": {},
                 "data": [],
                 "columns": [],
                 "excel_path": excel_path,
                 "note": "No data in the system to list"
             })
 
-        # --- Extract summary values ---
-        section = re.sub(r"\s+", " ", output.strip())
-        summary = {
-            "Major": re.search(r"Major:\s*(\d+)", section).group(1) if re.search(r"Major:\s*(\d+)", section) else "0",
-            "Minor": re.search(r"Minor:\s*(\d+)", section).group(1) if re.search(r"Minor:\s*(\d+)", section) else "0",
-            "Warning": re.search(r"Warning:\s*(\d+)", section).group(1) if re.search(r"Warning:\s*(\d+)", section) else "0",
-            "Trunks": re.search(r"Trunks:\s*(\d+)", section).group(1) if re.search(r"Trunks:\s*(\d+)", section) else "0",
-            "Stations": re.search(r"Stations:\s*(\d+)", section).group(1) if re.search(r"Stations:\s*(\d+)", section) else "0",
-            "Links Down": re.search(r"Links Down:\s*(\d+)", section).group(1) if re.search(r"Links Down:\s*(\d+)", section) else "0",
-            "Links Up": re.search(r"Links Up:\s*(\d+)", section).group(1) if re.search(r"Links Up:\s*(\d+)", section) else "0",
-            "# Logins": re.search(r"# Logins:\s*(\d+)", section).group(1) if re.search(r"# Logins:\s*(\d+)", section) else "0"
-        }
+       
 
-        # --- Extract Gateway Status block ---
-        gw_block = re.search(r"GATEWAY STATUS(.*?)Command:", output, re.DOTALL | re.IGNORECASE)
-        gateways_data = []
+        print("This is media gateways output", output)
 
-        if gw_block:
-            text = gw_block.group(1)
-            # Remove the header lines
-            text = re.sub(r"Alarms", "", text)
-            text = re.sub(r"(MG\s+Mj\s+Mn\s+Wn\s+Lk)+", "", text, flags=re.IGNORECASE)
-            text = text.strip()
+        # df = pd.DataFrame(parse_cdr_link_section(output=output), columns=columns)
+        parsed = parse_status_media_gateways(output)  # get dict {summary, gateways}
 
-            # Split into tokens
-            tokens = re.findall(r"[A-Za-z0-9]+", text)
-            print("🧩 Extracted tokens from GATEWAY STATUS:", tokens)
+        gateways = parsed["gateways"]  # <-- this is the actual list of gateway rows!
 
-            # Filter out command echoes like "7", "8", "Command", etc.
-            ignore_tokens = {"7", "8", "Command"}
-            tokens = [t for t in tokens if t not in ignore_tokens]
+        summary = parsed["summary"]
+        df_gateways = pd.DataFrame(gateways)
 
-            # Build MG rows only if the token looks like an MG identifier (starts with digit or letter)
-            # Group in chunks of 5 if full MG rows appear; otherwise skip
-            for i in range(0, len(tokens), 5):
-                chunk = tokens[i:i+5]
-                if len(chunk) == 5 and chunk[0].upper() != "MG":
-                    gateways_data.append({
-                        "MG": chunk[0],
-                        "Mj": chunk[1],
-                        "Mn": chunk[2],
-                        "Wn": chunk[3],
-                        "Lk": chunk[4]
-                    })
+        # Optional: rename cols for UI preference
+        df_gateways = df_gateways.rename(columns={
+            "MG": "MG",
+            "Major": "Mj",
+            "Minor": "Mn",
+            "Warning": "Wn",
+            "Link": "Lk"
+        })
 
-        df_gateways = pd.DataFrame(gateways_data, columns=["MG", "Mj", "Mn", "Wn", "Lk"])
 
         # --- Save Excel ---
         os.makedirs("outputs", exist_ok=True)
@@ -1747,12 +1829,12 @@ def get_status_media_gateway():
 
         # status_media_gateway
 
-        log_command("status media-gateway", "Success", excel_path, f"{len(df_gateways)} gateways", 0)
+        log_command("status media-gateways", "Success", excel_path, f"{len(df_gateways)} gateways", 0)
         print(f"✅ Parsed {len(df_gateways)} gateway rows → Excel: {excel_path}")
 
         # --- Return for UI ---
         return jsonify({
-            "summary": summary,
+            "summary": summary, 
             "data": df_gateways.to_dict(orient="records"),
             "columns": df_gateways.columns.tolist(),
             "excel_path": excel_path
@@ -1988,15 +2070,128 @@ def get_status_aesvcs_interface():
 
 
 
+#parser for status aesvcs link
+ROW_RE = re.compile(
+    r"^\s*(?P<svc_link>\S+)\s+"
+    r"(?P<aes_server>\S+)\s+"
+    r"(?P<remote_ip>\d{1,3}(?:\.\d{1,3}){3})\s+"
+    r"(?P<remote_port>\d+)\s+"
+    r"(?P<local_node>\S+)\s+"
+    r"(?P<msgs_sent>\d+)\s+"
+    r"(?P<msgs_rcvd>\d+)\s*$"
+)
+
+def parse_aesvcs_link(output):
+    """
+    Parse the 'status aesvcs link' output and return list of row dicts.
+    Steps:
+      - Normalize lines
+      - Locate header line that begins with 'Svc/' (case-insensitive)
+      - From next line parse lines that match ROW_RE until end or next header/footer
+    """
+    if not output:
+        return []
+
+    # Normalize CRLF and split
+    lines = output.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+
+    # Find the header line that begins with 'Svc/' (skip everything until that)
+    header_idx = None
+    for i, ln in enumerate(lines):
+        if ln.strip().lower().startswith("svc/"):
+            header_idx = i
+            break
+
+    if header_idx is None:
+        # Try some fallback: look for 'Link  Server' or 'AE Services' header
+        for i, ln in enumerate(lines):
+            if "AE Services" in ln and "Remote IP" in ln:
+                header_idx = i
+                break
+
+    # If still not found - nothing to parse
+    if header_idx is None:
+        return []
+
+    # Data begins from the line after the header (skip header and header-underlines)
+    start = header_idx + 1
+    # Skip a possible second header line (like the "Link  Server" line). Move start forward
+    # until we hit a line that looks like data (starts with a token like NN/NN or digits)
+    while start < len(lines):
+        test = lines[start].strip()
+        # break if test looks like a data row start (e.g. "12/01" or "9/08" or similar)
+        if re.match(r"^\d+/\d+\b", test) or ROW_RE.match(test):
+            break
+        start += 1
+
+    parsed = []
+    for ln in lines[start:]:
+        s = ln.strip()
+        if not s:
+            continue
+        # stop on page/footer markers
+        low = s.lower()
+        if low.startswith("press") or low.startswith("page") or low.startswith("#") or "command" in low:
+            continue
+        m = ROW_RE.match(s)
+        if m:
+            parsed.append({
+                "svc_link": m.group("svc_link"),
+                "aes_server": m.group("aes_server"),
+                "remote_ip": m.group("remote_ip"),
+                "remote_port": int(m.group("remote_port")),
+                "local_node": m.group("local_node"),
+                "msgs_sent": int(m.group("msgs_sent")),
+                "msgs_rcvd": int(m.group("msgs_rcvd")),
+            })
+        else:
+            # not matched — sometimes server names contain dashes or other chars, or remote_ip might be missing.
+            # attempt a more permissive parse: split tokens and try to map expected fields
+            # tokenization fallback:
+            toks = re.split(r"\s+", s)
+            # require at least 7 tokens for fallback
+            if len(toks) >= 7:
+                # last two tokens are msgs_sent and msgs_rcvd if they are digits
+                if toks[-1].isdigit() and toks[-2].isdigit():
+                    msgs_rcvd = int(toks[-1])
+                    msgs_sent = int(toks[-2])
+                    local_node = toks[-3]
+                    remote_port = toks[-4]
+                    remote_ip = toks[-5]
+                    aes_server = toks[-6]
+                    svc_link = toks[-7]
+                    # only accept if remote_ip looks like IP and remote_port digits
+                    if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", remote_ip) and remote_port.isdigit():
+                        parsed.append({
+                            "svc_link": svc_link,
+                            "aes_server": aes_server,
+                            "remote_ip": remote_ip,
+                            "remote_port": int(remote_port),
+                            "local_node": local_node,
+                            "msgs_sent": msgs_sent,
+                            "msgs_rcvd": msgs_rcvd,
+                        })
+                    else:
+                        # otherwise skip
+                        continue
+                else:
+                    continue
+            else:
+                continue
+
+    return parsed
+
+
+
+
+
+
+
 
 
 
 @app.route("/get-status-aesvcs-link", methods=["GET", "POST"])
 def get_status_aesvcs_link():
-    """
-    Runs 'status aesvcs link' on Avaya, handles multi-line screen output,
-    saves Excel, and returns JSON.
-    """
     import re
     import pandas as pd
     import os, time
@@ -2010,65 +2205,6 @@ def get_status_aesvcs_link():
         if not output or len(output.strip()) == 0:
             return jsonify({"error": "No output from Avaya command"}), 500
 
-        # --- Clean lines ---
-        lines = []
-        for line in output.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if any(skip in line for skip in [
-                "AE SERVICES LINK STATUS",
-                "Command successfully",
-                "press",
-                "Command:",
-                "Page",
-                "Srvr", "Link", "AE Services", "Remote"
-            ]):
-                continue
-            lines.append(line)
-
-        if not lines:
-            return jsonify({"error": "No valid AES link data found"}), 500
-
-        # --- Combine continuation lines (IP appears after numeric row) ---
-        merged = []
-        i = 0
-        while i < len(lines):
-            line = lines[i]
-            # If next line is an IP → append to current
-            if i + 1 < len(lines) and re.search(r"\d+\.\d+\.\d+\.\d+", lines[i + 1]):
-                line += " " + lines[i + 1].strip()
-                i += 1
-            merged.append(line)
-            i += 1
-
-        data_rows = []
-        for line in merged:
-            # Example:
-            # "01/01aes7038 53576procr 629 614 172.16.70.38"
-            line = re.sub(r"(\d+/\d+)([A-Za-z])", r"\1 \2", line)  # split 01/01aes
-            line = re.sub(r"(\d{3,5})(procr)", r"\1 \2", line)     # split 53576procr
-
-            tokens = re.split(r"\s+", line.strip())
-
-            # Expect something like:
-            # ['01/01', 'aes7038', '53576', 'procr', '629', '614', '172.16.70.38']
-            if len(tokens) < 7:
-                continue
-
-            srvr_link = tokens[0]
-            ae_server = tokens[1]
-            remote_port = tokens[2]
-            local_node = tokens[3]
-            msgs_sent = tokens[4]
-            msgs_rcvd = tokens[5]
-            remote_ip = tokens[6] if re.match(r"\d+\.\d+\.\d+\.\d+", tokens[6]) else ""
-
-            data_rows.append([
-                srvr_link, ae_server, remote_ip, remote_port,
-                local_node, msgs_sent, msgs_rcvd
-            ])
-
         columns = [
             "Srvr/Link",
             "AE Services Server",
@@ -2079,7 +2215,24 @@ def get_status_aesvcs_link():
             "Msgs Rcvd",
         ]
 
-        df = pd.DataFrame(data_rows, columns=columns)
+        # 🔥 FIX — rename dict keys to match UI column names
+        raw_rows = parse_aesvcs_link(output)
+        mapped_rows = [
+            {
+                "Srvr/Link": r["svc_link"],
+                "AE Services Server": r["aes_server"],
+                "Remote IP": r["remote_ip"],
+                "Remote Port": r["remote_port"],
+                "Local Node": r["local_node"],
+                "Msgs Sent": r["msgs_sent"],
+                "Msgs Rcvd": r["msgs_rcvd"],
+            }
+            for r in raw_rows
+        ]
+
+        df = pd.DataFrame(mapped_rows, columns=columns)
+
+        # Save Excel
         os.makedirs("outputs", exist_ok=True)
         today_folder = datetime.now().strftime("%Y-%m-%d")
         os.makedirs(os.path.join("outputs", today_folder), exist_ok=True)
@@ -2087,8 +2240,6 @@ def get_status_aesvcs_link():
         excel_path = os.path.join("outputs", today_folder, f"status_aesvcs_link_{timestamp}.xlsx")
 
         df.to_excel(excel_path, index=False)
-
-        # status_aesvcs_link
 
         duration = round(time.time() - start, 2)
         log_command("status aesvcs link", "Success", excel_path, f"{len(df)} rows", duration)
@@ -2105,6 +2256,10 @@ def get_status_aesvcs_link():
         print(f"❌ Error in status aesvcs link: {e}")
         log_command("status aesvcs link", "Failed", None, str(e), 0)
         return jsonify({"error": str(e)}), 500
+
+
+
+
 
 
 
@@ -2205,25 +2360,8 @@ def get_status_cdr_link():
 
         # --- RUN AVAYA COMMAND SAFELY ---
         try:
-            #output = run_avaya_command("status cdr-link")
-            output = """
-CDR LINK STATUS
-
-               Primary                           Secondary
-               -------                           ---------
-Link State:    up                                up
-
-Date & Time:   2025/11/16 05:59:26               2025/11/16 05:49:31
-
-Forward Seq. No:     66                           66
-Backward Seq. No:    0                            0
-
-CDR Buffer % Full:   0.00                         0.00
-
-Reason Code:   OK                                OK
-
-Command successfully completed
-"""
+            output = run_avaya_command("status cdr-link")
+    
         except Exception as ee:
             print("⚠️ SSH / run_avaya_command raised:", ee)
             output = None
