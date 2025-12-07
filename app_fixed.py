@@ -1268,6 +1268,125 @@ def get_status_trunk_all_data():
 
 
 
+# parser trunk-last-hour
+def parse_list_measurements_outage_trunk_last_hour(output):
+    """
+    Parse 'list measurements outage-trunk last-hour' output.
+
+    Strategy:
+    - Normalize newlines.
+    - Find the second header line that contains:
+        "No.   Type  Dir   Size  Mbr#       Outages"
+      (we search for the line containing 'Mbr#' and 'Outages')
+    - From the line after the header separator, collect non-empty lines that
+      start with a number (^\s*\d+).
+    - For each matching line use regex:
+        ^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$
+      and map to fields:
+        grp_no, grp_type, grp_dir, grp_size, grp_member, sampled_outages
+    - Be resilient to extra whitespace and page markers.
+    """
+    if not output or not isinstance(output, str):
+        return []
+
+    text = output.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+
+    header_idx = -1
+    # find the header line that contains both 'Mbr#' and 'Outages'
+    for i, ln in enumerate(lines):
+        if "Mbr#" in ln and "Outages" in ln:
+            header_idx = i
+            break
+
+    if header_idx == -1:
+        # try looser match
+        for i, ln in enumerate(lines):
+            if re.search(r"\bMbr#\b", ln) or re.search(r"\bOutages\b", ln):
+                header_idx = i
+                break
+
+    if header_idx == -1:
+        # header not found => nothing to parse
+        return []
+
+    # Collect data lines starting after header (skip separators like ----)
+    data_lines = []
+    footer_re = re.compile(r"press\s+CANCEL|press\s+NEXT\s+PAGE|Command\s+successfully", re.IGNORECASE)
+    for ln in lines[header_idx + 1:]:
+        if not ln or not ln.strip():
+            continue
+        if footer_re.search(ln):
+            break
+        # skip separator lines
+        if re.match(r"^\s*[-\s]+\s*$", ln):
+            continue
+        # data rows start with a number
+        if re.match(r"^\s*\d+", ln):
+            data_lines.append(ln.strip())
+
+    rows = []
+    pattern = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$")
+    for ln in data_lines:
+        m = pattern.match(ln)
+        if m:
+            grp_no = int(m.group(1))
+            grp_type = m.group(2)
+            grp_dir = m.group(3)
+            grp_size = int(m.group(4))
+            grp_member = int(m.group(5))
+            sampled_outages = int(m.group(6))
+            rows.append({
+                "grp_no": grp_no,
+                "grp_type": grp_type,
+                "grp_dir": grp_dir,
+                "grp_size": grp_size,
+                "grp_member": grp_member,
+                "sampled_outages": sampled_outages
+            })
+        else:
+            # Fallback: try tolerant token parsing if strict regex fails
+            toks = re.split(r"\s+", ln)
+            # We expect at least 6 tokens; if more, we try to use first 6 that match types
+            if len(toks) >= 6:
+                # try to coerce tokens to expected types using simple heuristics
+                try:
+                    grp_no = int(toks[0])
+                    grp_type = toks[1]
+                    grp_dir = toks[2]
+                    # find next numeric tokens for size, member, outages
+                    numeric_tokens = [t for t in toks[3:] if re.match(r"^\d+$", t)]
+                    if len(numeric_tokens) >= 3:
+                        grp_size = int(numeric_tokens[0])
+                        grp_member = int(numeric_tokens[1])
+                        sampled_outages = int(numeric_tokens[2])
+                    else:
+                        # best-effort mapping (fill zeros if missing)
+                        vals = [int(x) if x.isdigit() else 0 for x in toks[3:6]]
+                        grp_size, grp_member, sampled_outages = (vals + [0,0,0])[:3]
+                    rows.append({
+                        "grp_no": grp_no,
+                        "grp_type": grp_type,
+                        "grp_dir": grp_dir,
+                        "grp_size": grp_size,
+                        "grp_member": grp_member,
+                        "sampled_outages": sampled_outages
+                    })
+                except Exception:
+                    # skip malformed line
+                    continue
+            else:
+                continue
+
+    return rows
+
+
+
+
+
+
+
+
 # get-list-measurements-outage-trunk-last-hour
 
 @app.route("/get-list-measurements-outage-trunk-last-hour", methods=["GET", "POST"])
@@ -1276,6 +1395,7 @@ def get_list_measurements_outage_trunk_last_hour():
     import pandas as pd
     from flask import jsonify
     import os, time
+    from datetime import datetime
 
     try:
         start = time.time()
@@ -1289,47 +1409,56 @@ def get_list_measurements_outage_trunk_last_hour():
         import yesterday_peak
         yesterday_peak.SAT_HOST = ip
         yesterday_peak.SAT_PASSWORD = password
-        yesterday_peak.SAT_USERNAME = "DCLWeb"
+        yesterday_peak.SAT_USERNAME = "dadmin"
 
 
         # Run Avaya command
         output = run_avaya_command("list measurements outage-trunk last-hour")
 
-        # print("=== DEBUG: RAW OUTAGE OUTPUT ===")
-        # print(repr(output))
-        # print("================================")
-
+      
 
         if not output:
             return jsonify({"error": "Empty output received"}), 500
 
-        # Parse rows
-        data_lines = re.findall(r"(?m)^\s*\d+\s+.*", output)
+        # --- Parse using your parser (returns list of dicts with keys:
+        #     'grp_no','grp_type','grp_dir','grp_size','grp_member','sampled_outages')
+        parsed_rows = parse_list_measurements_outage_trunk_last_hour(output)
 
-        filtered_lines = []
-        for line in data_lines:
-            if re.search(r"press\s+(CANCEL|NEXT PAGE|to quit)", line, re.IGNORECASE):
-                continue
-            filtered_lines.append(line)
+        # If parser returned nothing, surface friendly message
+        if not parsed_rows:
+            # Create a very small Excel and return consistent structure for UI
+            os.makedirs("outputs", exist_ok=True)
+            today_folder = datetime.now().strftime("%Y-%m-%d")
+            os.makedirs(os.path.join("outputs", today_folder), exist_ok=True)
+            timestamp = datetime.now().strftime("%H-%M-%S")
+            excel_path = os.path.join("outputs", today_folder, f"list_measurements_outage_trunk_last_hour_{timestamp}.xlsx")
+            df_empty = pd.DataFrame([{"Message": "No valid outage rows found"}])
+            df_empty.to_excel(excel_path, index=False)
+            log_command("list measurements outage-trunk last-hour", "Success", excel_path, "No data", 0)
+            return jsonify({
+                "data": [],
+                "columns": ["Message"],
+                "excel_path": excel_path,
+                "note": "No valid outage rows found"
+            })
 
-        if not filtered_lines:
-            return jsonify({"error": "No valid trunk data found"}), 500
+        # Build DataFrame from parser result (do NOT pass the UI column names here)
+        df = pd.DataFrame(parsed_rows)
 
-        parsed_rows = []
-        for line in filtered_lines:
-            line = re.sub(r"\s+", " ", line.strip())
-            tokens = []
-            for part in line.split(" "):
-                split_parts = re.findall(r"[A-Za-z#]+|\d+", part)
-                tokens.extend(split_parts)
-            tokens = (tokens + [""] * 6)[:6]
-            parsed_rows.append(tokens)
+        # Rename internal parser keys to the friendly column names you want returned
+        df = df.rename(columns={
+            "grp_no": "Grp No.",
+            "grp_type": "Grp Type",
+            "grp_dir": "Grp Dir",
+            "grp_size": "Grp Siz",
+            "grp_member": "Grp Mbr#",
+            "sampled_outages": "#Sampled Outages"
+        })
 
-        columns = ["Grp No.", "Grp Type", "Grp Dir", "Grp Siz", "Grp Mbr#", "#Sampled Outages"]
-
-        df = pd.DataFrame(parsed_rows, columns=columns)
+        # Normalise missing values
         df = df.replace({pd.NA: None, pd.NaT: None, float("nan"): None})
 
+        # --- Save Excel ---
         os.makedirs("outputs", exist_ok=True)
         today_folder = datetime.now().strftime("%Y-%m-%d")
         os.makedirs(os.path.join("outputs", today_folder), exist_ok=True)
@@ -1343,7 +1472,7 @@ def get_list_measurements_outage_trunk_last_hour():
 
         return jsonify({
             "data": df.to_dict(orient="records"),
-            "columns": columns,
+            "columns": df.columns.tolist(),
             "excel_path": excel_path
         })
 
