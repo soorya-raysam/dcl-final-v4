@@ -778,6 +778,118 @@ def download_excel(filename):
 
 #         return jsonify({"error": str(e)}), 500
 
+
+# parser for trunk yesterday-peak
+
+def parse_yesterday_peak(output: str):
+    """
+    Robust parser that scans every line and accepts a match to the full data-row regex.
+    Returns list of dict rows (typed ints where appropriate).
+    """
+    rows = []
+    lines = output.splitlines()
+
+    # Data-row regex:
+    # 16 groups in order: grp_no, grp_size, grp_type, grp_dir, meas_hour,
+    # total_usage, total_seize, inc_seize, grp_ovfl, que_size, call_qued,
+    # que_ovfl, que_abd, out_srv, pct_atb, pct_blk
+    pattern = re.compile(
+        r"^\s*(\d+)\s+"              # grp_no
+        r"(\d+)\s+"                  # grp_size
+        r"(\S+)\s+"                  # grp_type
+        r"(\S+)\s+"                  # grp_dir
+        r"(\d{3,4})\s+"              # meas_hour (allow 3-4 digits)
+        r"(\d+)\s+"                  # total_usage
+        r"(\d+)\s+"                  # total_seize
+        r"(\d+)\s+"                  # inc_seize
+        r"(\d+)\s+"                  # grp_ovfl
+        r"(\d+)\s+"                  # que_size
+        r"(\d+)\s+"                  # call_qued
+        r"(\d+)\s+"                  # que_ovfl
+        r"(\d+)\s+"                  # que_abd
+        r"(\d+)\s+"                  # out_srv
+        r"(\d+)\s+"                  # pct_atb
+        r"(\d+)\s*$"                 # pct_blk
+    )
+
+    for line in lines:
+        if not line or line.strip().startswith(("Grp", "No.", "----", "Switch", "press", "list")):
+            # skip known header/footer lines quickly
+            continue
+
+        m = pattern.match(line)
+        if not m:
+            # also try a looser variant: allow variable whitespace and some missing trailing fields
+            # but only if at least the first 10 fields are present
+            loose = re.compile(
+                r"^\s*(\d+)\s+(\d+)\s+(\S+)\s+(\S+)\s+(\d{3,4})\s+(.+)$"
+            )
+            mm = loose.match(line)
+            if mm:
+                # attempt to split the trailing part into numeric tokens
+                groups = mm.groups()
+                trailing = re.split(r"\s+", groups[5].strip())
+                # if we have exactly 11 trailing numeric tokens -> good (makes total 16)
+                if len(trailing) >= 11:
+                    try:
+                        full = [
+                            int(groups[0]),            # grp_no
+                            int(groups[1]),            # grp_size
+                            groups[2],                 # grp_type
+                            groups[3],                 # grp_dir
+                            int(groups[4]),            # meas_hour
+                        ] + [int(x) for x in trailing[:11]]
+                        # map the 16 fields
+                        rows.append({
+                            "grp_no": full[0],
+                            "grp_size": full[1],
+                            "grp_type": full[2],
+                            "grp_dir": full[3],
+                            "meas_hour": full[4],
+                            "total_usage": full[5],
+                            "total_seize": full[6],
+                            "inc_seize": full[7],
+                            "grp_ovfl": full[8],
+                            "que_size": full[9],
+                            "call_qued": full[10],
+                            "que_ovfl": full[11],
+                            "que_abd": full[12],
+                            "out_srv": full[13],
+                            "pct_atb": full[14],
+                            "pct_blk": full[15],
+                        })
+                        continue
+                    except Exception:
+                        pass
+            # not a data row
+            continue
+
+        groups = m.groups()
+        rows.append({
+            "grp_no": int(groups[0]),
+            "grp_size": int(groups[1]),
+            "grp_type": groups[2],
+            "grp_dir": groups[3],
+            "meas_hour": int(groups[4]),
+            "total_usage": int(groups[5]),
+            "total_seize": int(groups[6]),
+            "inc_seize": int(groups[7]),
+            "grp_ovfl": int(groups[8]),
+            "que_size": int(groups[9]),
+            "call_qued": int(groups[10]),
+            "que_ovfl": int(groups[11]),
+            "que_abd": int(groups[12]),
+            "out_srv": int(groups[13]),
+            "pct_atb": int(groups[14]),
+            "pct_blk": int(groups[15]),
+        })
+
+    return rows
+
+
+
+
+
 @app.route("/get-yesterday-peak-data", methods=["POST"])
 def get_yesterday_peak_data():
     """
@@ -798,22 +910,51 @@ def get_yesterday_peak_data():
         # --- NEW: run with dynamic credentials ---
         output = run_yesterday_peak(ip, password)
 
+
+
         if not output or output.strip() == "":
             return jsonify({"error": "Empty output from SAT command"}), 500
 
         # Parse the trunk table
-        df = parse_trunk_summary(output)
+        
+        parsed = parse_yesterday_peak(output)
+
+        # If the parser returns a list (list of dicts), convert to DataFrame
+        if isinstance(parsed, list):
+            df = pd.DataFrame(parsed)
+        elif isinstance(parsed, pd.DataFrame):
+            df = parsed
+        else:
+            # unexpected return type from parser
+            return jsonify({"error": "Unexpected parser return type"}), 500
+
+        # Normalize df (avoid None/nan issues)
+        df = df.fillna("").reset_index(drop=True)
+
+        # If df is empty, return an empty-but-valid response (and do not attempt to write Excel)
+        if df.empty:
+            duration = round(time.time() - start_time, 2)
+            log_command("list measurements trunk-group summary yesterday-peak",
+                        "success", None, "0 rows", duration)
+            return jsonify({
+                "data": [],
+                "columns": [],
+                "excel_path": None,
+                "note": "No rows parsed from SAT output"
+            })
 
         # Save to Excel
         timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
         safe_prefix = "list_measurements_trunk-group_summary_yesterday-peak"
         excel_file = os.path.join(REPORT_DIR, f"{safe_prefix}_{timestamp}.xlsx")
+        os.makedirs(os.path.dirname(excel_file), exist_ok=True)
         df.to_excel(excel_file, index=False)
 
         # Convert to JSON for UI
         data_json = json.loads(df.to_json(orient="records"))
         columns = df.columns.tolist()
         duration = round(time.time() - start_time, 2)
+
 
         # Log command
         log_command("list measurements trunk-group summary yesterday-peak",
