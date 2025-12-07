@@ -1969,6 +1969,139 @@ def get_status_media_processor_all():
 
 
 
+# parser for aesvcs interface
+
+def parse_aesvcs_interface(output):
+    """
+    Parse 'status aesvcs interface' output.
+
+    Strategy:
+    - Normalize newlines.
+    - Find the header line that contains the columns:
+      Local Node   Enabled?   Number of Connections   Status
+    - From the line after that, collect non-empty lines until we hit a footer
+      such as 'Command successfully completed' or another big banner.
+    - For each candidate line, use a forgiving regex to extract fields:
+      ^\s*(\S+)\s+(\S+)\s+(\d+)\s+(\S+)\s*$
+      (local_node, enabled, num_connections, status)
+    - If a line doesn't match exactly, try a token-based fallback.
+    """
+    if not output or not isinstance(output, str):
+        return []
+
+    text = output.replace("\r\n", "\n").replace("\r", "\n")
+    lines = text.split("\n")
+
+    # Find header line index
+    header_pattern = re.compile(r"Local\s+Node\s+Enabled\?\s+Number\s+of\s+Connections\s+Status", re.IGNORECASE)
+    header_idx = -1
+    for i, ln in enumerate(lines):
+        if header_pattern.search(ln):
+            header_idx = i
+            break
+
+    if header_idx == -1:
+        # header not found: try to find a line that contains "Local Node" as fallback
+        for i, ln in enumerate(lines):
+            if "Local Node" in ln or "LocalNode" in ln:
+                header_idx = i
+                break
+
+    if header_idx == -1:
+        # nothing to parse
+        return []
+
+    # Collect data lines after header
+    data_lines = []
+    footer_re = re.compile(r"Command\s+successfully|press\s+NEXT\s+PAGE|press\s+CANCEL", re.IGNORECASE)
+    for ln in lines[header_idx + 1:]:
+        if not ln or not ln.strip():
+            continue
+        if footer_re.search(ln):
+            break
+        # skip lines that look like page markers
+        if re.match(r"^\s*Page\s+\d+", ln, re.IGNORECASE):
+            continue
+        # skip obvious banner separators
+        if re.match(r"^\s*[-=]{3,}\s*$", ln):
+            continue
+        data_lines.append(ln.rstrip())
+
+    rows = []
+    # Primary regex for well-formed lines
+    primary_re = re.compile(r"^\s*(\S+)\s+(\S+)\s+(\d+)\s+(\S+)\s*$")
+
+    for ln in data_lines:
+        m = primary_re.match(ln)
+        if m:
+            local_node = m.group(1)
+            enabled = m.group(2)
+            num_connections = int(m.group(3))
+            status = m.group(4)
+            rows.append({
+                "local_node": local_node,
+                "enabled": enabled,
+                "num_connections": num_connections,
+                "status": status
+            })
+            continue
+
+        # Fallback: token split and heuristics (for lines with variable spacing)
+        toks = re.split(r"\s{2,}|\t", ln)  # prefer double-space split which often separates columns
+        if len(toks) >= 4:
+            t0 = toks[0].strip()
+            t1 = toks[1].strip()
+            # Try to find integer token for connections
+            conn = ""
+            stat = ""
+            # tokens after second: search for a token that is purely digits
+            for t in toks[2:]:
+                if re.match(r"^\d+$", t.strip()):
+                    conn = int(t.strip())
+                    # everything after that is status (join)
+                    idx = toks.index(t)
+                    stat = " ".join([x.strip() for x in toks[idx+1:]]).strip() or ""
+                    break
+            if conn == "":
+                # fallback: try splitting by whitespace and pick last token as status
+                pieces = re.split(r"\s+", ln.strip())
+                if len(pieces) >= 4 and pieces[-2].isdigit():
+                    conn = int(pieces[-2])
+                    stat = pieces[-1]
+                else:
+                    # give a gentle best-effort parse
+                    conn = int(pieces[-2]) if len(pieces) >= 2 and pieces[-2].isdigit() else 0
+                    stat = pieces[-1] if pieces else ""
+            rows.append({
+                "local_node": t0,
+                "enabled": t1,
+                "num_connections": int(conn),
+                "status": stat
+            })
+            continue
+
+        # If absolutely nothing matched, attempt a whitespace split fallback
+        toks2 = re.split(r"\s+", ln.strip())
+        if len(toks2) >= 4:
+            try:
+                rows.append({
+                    "local_node": toks2[0],
+                    "enabled": toks2[1],
+                    "num_connections": int(toks2[2]) if toks2[2].isdigit() else 0,
+                    "status": toks2[3]
+                })
+            except Exception:
+                # last resort: skip
+                continue
+
+    return rows
+
+
+
+
+
+
+
 
 
 @app.route("/get-status-aesvcs-interface", methods=["GET", "POST"])
@@ -1988,6 +2121,8 @@ def get_status_aesvcs_interface():
         # ✅ Run Avaya command
         output = run_avaya_command("status aesvcs interface")
 
+        
+
         if not output or len(output.strip()) == 0:
             print("❌ No output from Avaya command!")
             return jsonify({"error": "No output from Avaya command"}), 500
@@ -1997,47 +2132,12 @@ def get_status_aesvcs_interface():
             print(f"{i:02d}: {line}")
         print("====================================================\n")
 
-        # ✅ Clean and collect only useful lines
-        cleaned_lines = []
-        for line in output.splitlines():
-            line = line.strip()
-            if not line:
-                continue
-            if "AE SERVICES INTERFACE STATUS" in line.upper():
-                continue
-            if "Command successfully" in line or "Command:" in line:
-                continue
-            if "Local Node" in line or "Enabled?" in line:
-                continue
-            if "Connections" in line and not line.startswith("procr"):
-                # skip header fragment
-                continue
-            if re.match(r"^\S+", line):  # keep data lines
-                # normalize spacing
-                cleaned_lines.append(re.sub(r"\s+", " ", line))
+        
 
-        if not cleaned_lines:
-            print("⚠️ No valid AESVCS interface data found.")
-            return jsonify({"error": "No valid AESVCS interface data found"}), 500
-
-        # ✅ Parse each data row
-        data_rows = []
-        for line in cleaned_lines:
-            # Example: procr yes1 listening  →  procr yes 1 listening
-            line = re.sub(r"(\D)(\d+)", r"\1 \2", line)  # split letter-number
-            line = re.sub(r"(\d)([A-Za-z])", r"\1 \2", line)  # split number-letter
-            parts = re.split(r"\s+", line.strip())
-
-            # Expected 4 columns: Local Node, Enabled?, Number of Connections, Status
-            if len(parts) < 4:
-                parts += [""] * (4 - len(parts))
-            parts = parts[:4]
-            data_rows.append(parts)
-
-        columns = ["Local Node", "Enabled?", "Number of Connections", "Status"]
+        columns = ["local_node", "enabled", "num_connections", "status"]
 
         # ✅ Create DataFrame
-        df = pd.DataFrame(data_rows, columns=columns)
+        df = pd.DataFrame(parse_aesvcs_interface(output), columns=columns)
         df = df.replace({pd.NA: None, pd.NaT: None, float("nan"): None})
 
         # ✅ Save Excel
