@@ -41,21 +41,21 @@ import json
 
 
 import json
-CREDS_FILE = ".creds.json"
+# CREDS_FILE = ".creds.json"
 
-def save_creds(ip, password):
-    try:
-        with open(CREDS_FILE, "w") as f:
-            json.dump({"ip": ip, "password": password}, f)
-    except:
-        pass
+# def save_creds(ip, password):
+#     try:
+#         with open(CREDS_FILE, "w") as f:
+#             json.dump({"ip": ip, "password": password}, f)
+#     except:
+#         pass
 
-def load_creds():
-    try:
-        with open(CREDS_FILE, "r") as f:
-            return json.load(f)
-    except:
-        return None
+# def load_creds():
+#     try:
+#         with open(CREDS_FILE, "r") as f:
+#             return json.load(f)
+#     except:
+#         return None
 
 from flask_cors import CORS
 import os, time, glob, sqlite3
@@ -108,6 +108,18 @@ DB_PATH = os.path.join(BASE_DIR, "command_logs.db")
 
 _cached_health_data = None
 _cached_timestamp = None
+
+
+
+def inject_sat_creds(ip, password):
+    import yesterday_peak
+    yesterday_peak.SAT_HOST = ip
+    yesterday_peak.SAT_PASSWORD = password
+    yesterday_peak.SAT_USERNAME = "dadmin"  # or your real username
+
+
+
+
 
 
 # ======================================================
@@ -190,35 +202,26 @@ def get_live_health_data():
     global _cached_health_data, _cached_timestamp
 
     try:
-        # =======================
         # POST → Real-time fetch
-        # =======================
         if request.method == "POST":
             data = request.get_json(force=True)
-
             ip = data.get("ip")
             password = data.get("password")
 
-            print("📥 Received POST from UI:", ip, password)
+            print("📥 Received POST from UI:", ip, bool(password and len(password)>0))
 
             if not ip or not password:
                 return jsonify({"error": "Missing IP or password"}), 400
 
             print(f"🔄 Fetching live data dynamically from {ip} ...")
-
             result = generate_health_data(ip=ip, password=password)
 
-            if request.method == "POST":
-                ip = data.get("ip")
-                password = data.get("password")
+            # avoid duplicate POST if React strict mode runs twice
+            if _cached_timestamp and (datetime.now() - datetime.fromisoformat(_cached_timestamp)).total_seconds() < 2:
+                print("⏭️ Duplicate POST ignored (React strict mode)")
+                return jsonify(_cached_health_data)
 
-                # avoid duplicate POST if React strict mode runs twice
-                if _cached_timestamp and (datetime.now() - datetime.fromisoformat(_cached_timestamp)).total_seconds() < 2:
-                    print("⏭️ Duplicate POST ignored (React strict mode)")
-                    return jsonify(_cached_health_data)
-
-
-            # Log commands
+            # Log commands (best-effort)
             try:
                 logs = result.get("command_logs", [])
                 for cl in logs:
@@ -232,34 +235,21 @@ def get_live_health_data():
             except Exception as e:
                 print(f"⚠️ Failed to store command logs: {e}")
 
-            # Cache for GET fallback
             _cached_health_data = result
             _cached_timestamp = datetime.now().isoformat()
+            return jsonify(result)
 
-            return jsonify(result)        # ⭐️ CRITICAL: STOP HERE
-
-        # =======================
-        # GET → Use cached/saved creds
-        # =======================
-        print("🟡 GET fallback using creds:", load_creds())
-
-        creds = load_creds()
-        if creds:
-            result = generate_health_data(ip=creds["ip"],
-                                          password=creds["password"])
-        else:
-            result = generate_health_data(ip="0.0.0.0", password="")
-
-        _cached_health_data = result
-        _cached_timestamp = datetime.now().isoformat()
-
-        return jsonify(result)
+        # GET → return cached if available, else instruct client to POST
+        if _cached_health_data:
+            return jsonify(_cached_health_data)
+        return jsonify({"error": "No cached data available. Please POST ip/password to fetch live data."}), 400
 
     except Exception as e:
         print(f"❌ Error fetching data: {e}")
         if _cached_health_data:
             return jsonify(_cached_health_data)
         return jsonify({"error": str(e)}), 500
+
 
 
 
@@ -294,29 +284,29 @@ def run_single_sat_command(ip, password, cmd, timeout=10):
 # Each accepts POST { ip, password } and also supports GET fallback to saved creds
 # ---------------------------
 
-def _get_creds_from_request_or_saved():
-    """Helper to return (ip, password) from JSON POST or saved creds or None."""
-    if request.method == "POST":
-        try:
-            j = request.get_json(force=True)
-            ip = j.get("ip")
-            password = j.get("password")
-            if ip and password:
-                # optional: persist for GET fallback
-                save_creds(ip, password)
-                return ip, password
-        except Exception:
-            pass
-    c = load_creds()
-    if c:
-        return c.get("ip"), c.get("password")
+def _get_creds_from_request():
+    """
+    Only read IP/password from POST request.
+    Never load/save from disk.
+    """
+    try:
+        j = request.get_json(force=True)
+        ip = (j.get("ip") or "").strip()
+        password = (j.get("password") or "").strip()
+        if ip and password:
+            return ip, password
+    except:
+        pass
     return None, None
+
 
 @app.route("/health/uptime", methods=["GET", "POST"])
 def health_uptime():
-    ip, password = _get_creds_from_request_or_saved()
+    ip, password = _get_creds_from_request()
     if not ip or not password:
-        return jsonify({"error": "Missing ip/password"}), 400
+        return jsonify({"error": "Missing IP/password"}), 400
+
+    inject_sat_creds(ip, password)
     try:
         out, err = run_single_linux_command("uptime", ip, password)
         # keep parsing same as before
@@ -332,9 +322,11 @@ def health_disk():
     Returns df -h and df -k parsed. Use GET fallback if needed.
     Optional query param 'which=df -h' or 'which=df -k' (defaults: both).
     """
-    ip, password = _get_creds_from_request_or_saved()
+    ip, password = _get_creds_from_request()
     if not ip or not password:
-        return jsonify({"error": "Missing ip/password"}), 400
+        return jsonify({"error": "Missing IP/password"}), 400
+
+    inject_sat_creds(ip, password)
     which = request.args.get("which", "").strip()
     response = {}
     try:
@@ -353,9 +345,11 @@ def health_disk():
 
 @app.route("/health/server-status", methods=["GET", "POST"])
 def health_server_status():
-    ip, password = _get_creds_from_request_or_saved()
+    ip, password = _get_creds_from_request()
     if not ip or not password:
-        return jsonify({"error": "Missing ip/password"}), 400
+        return jsonify({"error": "Missing IP/password"}), 400
+
+    inject_sat_creds(ip, password)
     try:
         out, err = run_single_linux_command("/opt/ecs/bin/statusserver", ip, password)
         return jsonify({"server_status": out, "error": err})
@@ -364,9 +358,11 @@ def health_server_status():
 
 @app.route("/health/alarms", methods=["GET", "POST"])
 def health_alarms():
-    ip, password = _get_creds_from_request_or_saved()
+    ip, password = _get_creds_from_request()
     if not ip or not password:
-        return jsonify({"error": "Missing ip/password"}), 400
+        return jsonify({"error": "Missing IP/password"}), 400
+
+    inject_sat_creds(ip, password)
     try:
         out, err = run_single_linux_command("/opt/ecs/bin/almdisplay -v", ip, password)
         parsed = parse_alarms_output(out)
@@ -376,9 +372,11 @@ def health_alarms():
 
 @app.route("/health/backup", methods=["GET", "POST"])
 def health_backup():
-    ip, password = _get_creds_from_request_or_saved()
+    ip, password = _get_creds_from_request()
     if not ip or not password:
-        return jsonify({"error": "Missing ip/password"}), 400
+        return jsonify({"error": "Missing IP/password"}), 400
+
+    inject_sat_creds(ip, password)
     try:
         out, err = run_single_linux_command("/opt/ecs/sbin/backup -t", ip, password, timeout=30)
         return jsonify({"backup_status": out, "error": err})
@@ -526,6 +524,11 @@ def get_list_trunk_group_data():
 
 
         # POST → execute command
+        ip, password = _get_creds_from_request()
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
         output = run_list_trunk_group(ip, password)
 
         if not output or output.strip() == "":
@@ -904,10 +907,13 @@ def get_yesterday_peak_data():
         ip = req.get("ip")
         password = req.get("password")
 
-        if not ip or not password:
-            return jsonify({"error": "Missing IP or password"}), 400
 
         # --- NEW: run with dynamic credentials ---
+        ip, password = _get_creds_from_request()
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
         output = run_yesterday_peak(ip, password)
 
 
@@ -1098,6 +1104,11 @@ def get_monitor_traffic_trunk_groups_data():
 
 
         # POST mode → execute SAT command
+        ip, password = _get_creds_from_request()
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
         output = run_monitor_traffic_trunk_groups(ip, password)
 
         if not output or output.strip() == "":
@@ -1222,26 +1233,26 @@ def get_latest_file_for_status_trunk(trunk):
 def run_status_trunk():
     """
     Runs backend/status_trunk.py automatically for all trunk groups.
-    No user input required.
     """
     try:
-        # Try to read POST JSON if present, but don't force (prevents 400)
+        # Read body (do not force if not present)
         req = request.get_json(silent=True) or {}
+        # prefer explicit creds in POST body
         ip = req.get("ip")
         password = req.get("password")
 
-        # If no creds in body, fallback to saved creds helper (works like other endpoints)
+        # fallback to helper (which reads POST JSON) — use it only if not provided above
         if not ip or not password:
-            ip, password = _get_creds_from_request_or_saved()
-            if not ip or not password:
-                return jsonify({"error": "Missing ip/password"}), 400
+            ip, password = _get_creds_from_request()
 
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
 
         start_time = time.time()
         print("[Backend] Running status_trunk.py for all trunk groups...")
-        script_path = os.path.join(os.path.dirname(__file__), "status_trunk.py")
-
-        # run_status_trunk_all returns absolute excel path (or None on failure)
+        # call the wrapper function in status_trunk module
         excel_path = run_status_trunk_all(ip, password)
 
         if not excel_path:
@@ -1260,6 +1271,7 @@ def run_status_trunk():
         print("[Backend] ❌ Exception in /run-status-trunk:", e)
         log_command("status trunk all", "Failed", None, str(e), 0)
         return jsonify({"error": str(e)}), 500
+
 
 
 
@@ -1311,10 +1323,11 @@ def get_status_trunk_data():
                 return jsonify({"error": "trunk number required in POST body"}), 400
 
             # fallback to saved creds if ip/password not provided
+            ip, password = _get_creds_from_request()
             if not ip or not password:
-                ip, password = _get_creds_from_request_or_saved()
-                if not ip or not password:
-                    return jsonify({"error": "Missing IP/password for POST run"}), 400
+                return jsonify({"error": "Missing IP/password"}), 400
+
+            inject_sat_creds(ip, password)
 
             # Run single trunk command dynamically and parse
             raw = run_status_trunk(ip, password, trunk)
@@ -1410,117 +1423,67 @@ def get_status_trunk_all_data():
 
 
 # parser trunk-last-hour
-def parse_list_measurements_outage_trunk_last_hour(output):
-    """
-    Parse 'list measurements outage-trunk last-hour' output.
-
-    Strategy:
-    - Normalize newlines.
-    - Find the second header line that contains:
-        "No.   Type  Dir   Size  Mbr#       Outages"
-      (we search for the line containing 'Mbr#' and 'Outages')
-    - From the line after the header separator, collect non-empty lines that
-      start with a number (^\s*\d+).
-    - For each matching line use regex:
-        ^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$
-      and map to fields:
-        grp_no, grp_type, grp_dir, grp_size, grp_member, sampled_outages
-    - Be resilient to extra whitespace and page markers.
-    """
-    if not output or not isinstance(output, str):
+def parse_list_measurements_outage_trunk_last_hour(output: str):
+    if not output:
         return []
 
-    text = output.replace("\r\n", "\n").replace("\r", "\n")
-    lines = text.split("\n")
-
-    header_idx = -1
-    # find the header line that contains both 'Mbr#' and 'Outages'
-    for i, ln in enumerate(lines):
-        if "Mbr#" in ln and "Outages" in ln:
-            header_idx = i
-            break
-
-    if header_idx == -1:
-        # try looser match
-        for i, ln in enumerate(lines):
-            if re.search(r"\bMbr#\b", ln) or re.search(r"\bOutages\b", ln):
-                header_idx = i
-                break
-
-    if header_idx == -1:
-        # header not found => nothing to parse
-        return []
-
-    # Collect data lines starting after header (skip separators like ----)
-    data_lines = []
-    footer_re = re.compile(r"press\s+CANCEL|press\s+NEXT\s+PAGE|Command\s+successfully", re.IGNORECASE)
-    for ln in lines[header_idx + 1:]:
-        if not ln or not ln.strip():
-            continue
-        if footer_re.search(ln):
-            break
-        # skip separator lines
-        if re.match(r"^\s*[-\s]+\s*$", ln):
-            continue
-        # data rows start with a number
-        if re.match(r"^\s*\d+", ln):
-            data_lines.append(ln.strip())
+    lines = output.replace("\r", "").split("\n")
 
     rows = []
-    pattern = re.compile(r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$")
-    for ln in data_lines:
-        m = pattern.match(ln)
-        if m:
-            grp_no = int(m.group(1))
-            grp_type = m.group(2)
-            grp_dir = m.group(3)
-            grp_size = int(m.group(4))
-            grp_member = int(m.group(5))
-            sampled_outages = int(m.group(6))
-            rows.append({
-                "grp_no": grp_no,
-                "grp_type": grp_type,
-                "grp_dir": grp_dir,
-                "grp_size": grp_size,
-                "grp_member": grp_member,
-                "sampled_outages": sampled_outages
-            })
-        else:
-            # Fallback: try tolerant token parsing if strict regex fails
-            toks = re.split(r"\s+", ln)
-            # We expect at least 6 tokens; if more, we try to use first 6 that match types
-            if len(toks) >= 6:
-                # try to coerce tokens to expected types using simple heuristics
-                try:
-                    grp_no = int(toks[0])
-                    grp_type = toks[1]
-                    grp_dir = toks[2]
-                    # find next numeric tokens for size, member, outages
-                    numeric_tokens = [t for t in toks[3:] if re.match(r"^\d+$", t)]
-                    if len(numeric_tokens) >= 3:
-                        grp_size = int(numeric_tokens[0])
-                        grp_member = int(numeric_tokens[1])
-                        sampled_outages = int(numeric_tokens[2])
-                    else:
-                        # best-effort mapping (fill zeros if missing)
-                        vals = [int(x) if x.isdigit() else 0 for x in toks[3:6]]
-                        grp_size, grp_member, sampled_outages = (vals + [0,0,0])[:3]
-                    rows.append({
-                        "grp_no": grp_no,
-                        "grp_type": grp_type,
-                        "grp_dir": grp_dir,
-                        "grp_size": grp_size,
-                        "grp_member": grp_member,
-                        "sampled_outages": sampled_outages
-                    })
-                except Exception:
-                    # skip malformed line
-                    continue
-            else:
-                continue
+
+    # Regex to split the smashed field: isdntwo150 → isdn | two | 150
+    smashed_re = re.compile(
+    r"^([A-Za-z]+?)(two|in|out|one|both)(\d+)$",
+    re.IGNORECASE
+)
+
+
+    for ln in lines:
+        ln = ln.strip()
+        if not ln:
+            continue
+
+        # Skip headers / footers
+        if (
+            "Switch Name" in ln
+            or "TRUNK OUT OF SERVICE" in ln
+            or "press" in ln.lower()
+            or "Grp" in ln
+            or "Page" in ln
+        ):
+            continue
+
+        # Tokenize
+        parts = re.split(r"\s+", ln)
+
+        # Expected minimal tokens:
+        # [grp_no, smashed_field, member, outages]
+        if len(parts) < 4:
+            continue
+
+        grp_no = parts[0]
+
+        smashed = parts[1]
+        mbr = parts[2]
+        outages = parts[3]
+
+        m = smashed_re.match(smashed)
+        if not m:
+            # If this fails, skip — malformed line
+            continue
+
+        grp_type, grp_dir, grp_size = m.groups()
+
+        rows.append({
+            "Grp No": int(grp_no),
+            "Grp Type": grp_type,
+            "Grp Dir": grp_dir,
+            "Grp Size": int(grp_size),
+            "Grp Mbr#": int(mbr),
+            "#Sampled Outages": int(outages),
+        })
 
     return rows
-
 
 
 
@@ -1542,9 +1505,11 @@ def get_list_measurements_outage_trunk_last_hour():
         start = time.time()
 
         # ✅ REQUIRED (fix for NoneType output)
-        ip, password = _get_creds_from_request_or_saved()
+        ip, password = _get_creds_from_request()
         if not ip or not password:
-            return jsonify({"error": "Missing IP or password"}), 400
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        
 
         # Inject credentials into SAT module (CORRECT WAY)
         import yesterday_peak
@@ -1554,12 +1519,44 @@ def get_list_measurements_outage_trunk_last_hour():
 
 
         # Run Avaya command
+        ip, password = _get_creds_from_request()
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
         output = run_avaya_command("list measurements outage-trunk last-hour")
+
+#         output=  """                                                                             7list measurements outage-trunk last-hour 8                                                                                7       Page   18Switch Name:                     Date: 10:23 pm  SUN DEC 7, 2025  
+# TRUNK OUT OF SERVICE REPORT
+# (trunks sampled for 'out-of-service' condition once each hour)
+# Grp   Grp   Grp  Grp   Grp    #Sampled
+# No.   Type  Dir  Size  Mbr#   Outages
+# 4     sip   two  50    1      1   
+# 4   sip two50  2   1   
+# 4   sip two50  3   1   
+# 4   sip two50  4   1   
+# 4   sip two50  5   1   
+# 4   sip two50  6   1   
+# 4   sip two50  7   1   
+# 4   sip two50  8   1   
+# 4   sip two50  9   1   
+# 4   sip two50  10  1   
+# 4   sip two50  11  1   
+# 4   sip two50  12  1   
+# 4   sip two50  13  1   
+# 7                                                                                		press CANCEL to quit --  press NEXT PAGE to continue8~"""
+
+        print("This is the output", output)
+
+
 
       
 
         if not output:
             return jsonify({"error": "Empty output received"}), 500
+
+        
+        print("this is before parsing starts")
 
         # --- Parse using your parser (returns list of dicts with keys:
         #     'grp_no','grp_type','grp_dir','grp_size','grp_member','sampled_outages')
@@ -1578,10 +1575,12 @@ def get_list_measurements_outage_trunk_last_hour():
             log_command("list measurements outage-trunk last-hour", "Success", excel_path, "No data", 0)
             return jsonify({
                 "data": [],
-                "columns": ["Message"],
+                "columns": [],
                 "excel_path": excel_path,
                 "note": "No valid outage rows found"
             })
+
+        print("this is before dataframe is built")
 
         # Build DataFrame from parser result (do NOT pass the UI column names here)
         df = pd.DataFrame(parsed_rows)
@@ -1626,39 +1625,106 @@ def get_list_measurements_outage_trunk_last_hour():
 
 
 # Parser - CTI Link
-def parse_cti_link(output):
-    lines = output.splitlines()
+STATE_RE = re.compile(r"\b(established|down)\b", re.IGNORECASE)
 
-    # Skip until header is detected
-    start_idx = None
-    for i, line in enumerate(lines):
-        if re.search(r"CTI\s+Version\s+Mnt", line):
-            start_idx = i + 2   # skip header + sub-header
-            break
-
-    if start_idx is None:
-        return {"error": "Header not found", "data": []}
-
-    rows = []
-    row_re = re.compile(
-        r"^\s*(\d+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\S+)\s+(\d+)\s+(\d+)"
+def normalize_cti_line(line: str) -> str:
+    # Fix cases like 1012no → 10 12 no
+    line = re.sub(
+        r"\b(\d{1,2})(\d{1,2})(no|yes)\b",
+        r"\1 \2 \3",
+        line,
+        flags=re.I
     )
 
-    for line in lines[start_idx:]:
-        m = row_re.match(line)
-        if not m:
-            continue  # skip garbage / empty / footer
+    # Fix simpler glued case like 12no → 12 no
+    line = re.sub(
+        r"(\d)(no|yes)",
+        r"\1 \2",
+        line,
+        flags=re.I
+    )
 
-        row = {
-            "CTI Link": m.group(1),
-            "Version": m.group(2),
-            "Mnt Busy": m.group(3),
-            "AE Services Server": m.group(4),
-            "Service State": m.group(5),
-            "Msgs Sent": m.group(6),
-            "Msgs Rcvd": m.group(7)
-        }
-        rows.append(row)
+    return re.sub(r"\s+", " ", line).strip()
+
+
+
+def parse_cti_link(output: str):
+    rows = []
+    buffer = ""
+
+    for raw in output.splitlines():
+        raw = raw.strip()
+        if not raw:
+            continue
+
+        low = raw.lower()
+
+        # 🔴 HARD SKIP banners / headers
+        if any(x in low for x in [
+            "status",
+            "cti-link",
+            "ae services",
+            "page",
+            "press",
+            "link busy",
+            "version"
+        ]):
+            continue
+
+        line = normalize_cti_line(raw)
+        buffer = (buffer + " " + line).strip()
+
+        # Must contain a valid state before parsing
+        state_match = STATE_RE.search(buffer)
+        if not state_match:
+            continue
+
+        state = state_match.group(1).lower()
+        before = buffer[:state_match.start()].strip()
+        after = buffer[state_match.end():].strip()
+
+        tokens_before = before.split()
+        tokens_after = after.split()
+
+        # Need sent/rcvd
+        if len(tokens_after) < 2:
+            continue
+        if not tokens_after[-1].isdigit() or not tokens_after[-2].isdigit():
+            continue
+
+        try:
+            sent = int(tokens_after[-2])
+            rcvd = int(tokens_after[-1])
+
+            idx = 0
+            cti = int(tokens_before[idx]); idx += 1
+
+            # Optional version
+            if idx < len(tokens_before) and tokens_before[idx].isdigit():
+                version = int(tokens_before[idx])
+                idx += 1
+            else:
+                version = 0
+
+            busy = tokens_before[idx]; idx += 1
+
+            # EVERYTHING until state is server name
+            server = " ".join(tokens_before[idx:]).strip() or "-"
+
+            rows.append({
+                "CTI Link": cti,
+                "Version": version,
+                "Mnt Busy": busy,
+                "AE Services Server": server,
+                "Service State": state,
+                "Msgs Sent": sent,
+                "Msgs Rcvd": rcvd
+            })
+
+            buffer = ""  # ✅ flush only after valid row
+
+        except Exception:
+            continue
 
     return rows
 
@@ -1683,6 +1749,11 @@ def get_status_aesvcs_cti_link():
 
         # --- SAFE SSH call wrapper (prevents NoneType crashes) ---
         try:
+            ip, password = _get_creds_from_request()
+            if not ip or not password:
+                return jsonify({"error": "Missing IP/password"}), 400
+
+            inject_sat_creds(ip, password)
             output = run_avaya_command("status aesvcs cti-link")
 
         except Exception as ssh_err:
@@ -1763,83 +1834,84 @@ def get_status_aesvcs_cti_link():
 
 # Parser - Survivable Processor
 def parse_survivable_processor_output(output):
-
-    if not output or not output.strip():
+    if not output:
         return []
 
-    cleaned_lines = []
-    for line in output.splitlines():
-        raw = line.rstrip()
-        if not raw.strip():
-            continue
-        if "SURVIVABLE" in raw or "Record Name" in raw or re.search(r"Number\s+IP", raw):
-            continue
-        if "Command successfully" in raw or "press" in raw.lower():
-            continue
-        if re.search(r"Page\s+\d+", raw):
-            continue
-        if "CANCEL" in raw:
-            continue
-        cleaned_lines.append(raw)
-
-    data_rows = []
+    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
+    rows = []
     i = 0
 
-    ip_re = re.compile(r"^\s*([0-9]{1,3}(?:\.[0-9]{1,3}){3})\s*$")
+    ip_re = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
 
-    # Primary regex (improved)
-    primary_re = re.compile(
-        r"^\s*(\d+)\s+(.+?)\s+([A-Z0-9\-]+)\s+([ynYN])\s+([ynYN])\s*(.*?)\s+(\d+)\s*$",
-        re.IGNORECASE
-    )
+    while i < len(lines):
+        line = lines[i]
 
-    while i < len(cleaned_lines):
-
-        line = cleaned_lines[i].lstrip()
-        m = primary_re.match(line)
-
-        if m:
-            rec_no = m.group(1).strip()
-            name = m.group(2).strip()
-            type_ = m.group(3).strip()
-            reg = m.group(4).strip().lower()
-            ack = m.group(5).strip().lower()
-            translations = m.group(6).strip()
-            net_rgn = m.group(7).strip()
-
-            # Next line may be IP address
-            ip_addr = ""
-            notes = ""
-            j = i + 1
-
-            if j < len(cleaned_lines) and ip_re.match(cleaned_lines[j].strip()):
-                ip_addr = ip_re.match(cleaned_lines[j].strip()).group(1)
-                j += 1
-                # optional note line ("No V6 Entry")
-                if j < len(cleaned_lines) and not re.match(r"^\d+", cleaned_lines[j].strip()):
-                    notes = cleaned_lines[j].strip()
-                    j += 1
-
-            row = {
-                "Record number": rec_no,
-                "Name/IP address": f"{name} {ip_addr}".strip(),
-                "Type": type_,
-                "Reg": reg,
-                "Ack": ack,
-                "Translations updated": translations,
-                "Net Rgn": net_rgn
-            }
-            if notes:
-                row["Name/IP address"] += f" ({notes})"
-
-            data_rows.append(row)
-            i = j
+        # Skip noise
+        if (
+            "SURVIVABLE" in line.upper()
+            or "Record Name" in line
+            or "press" in line.lower()
+            or "page" in line.lower()
+        ):
+            i += 1
             continue
 
-        # No match → skip
-        i += 1
+        # Record header must start with number
+        if not re.match(r"^\d+\s+", line):
+            i += 1
+            continue
 
-    return data_rows
+        # Example:
+        # 1 Bhubneshwar-LSPLSP yn16:35 12/11/2025 24
+        tokens = re.split(r"\s+", line)
+
+        rec_no = tokens[0]
+        name = tokens[1]
+        rest = " ".join(tokens[2:])
+
+        # Reg/Act may be merged (yn / yy / nn)
+        reg, act = "", ""
+        m = re.search(r"\b([ynYN])\s*([ynYN])\b", rest)
+        if m:
+            reg, act = m.group(1).lower(), m.group(2).lower()
+            rest = rest.replace(m.group(0), "").strip()
+
+        # Extract timestamp + date if present
+        ts_match = re.search(r"\d{1,2}:\d{2}\s+\d{1,2}/\d{1,2}/\d{4}", rest)
+        translations = ts_match.group(0) if ts_match else ""
+
+        # Net Rgn is usually last number
+        net_rgn = ""
+        m = re.search(r"\b(\d+)$", rest)
+        if m:
+            net_rgn = m.group(1)
+
+        # Look ahead for IP + No V6 Entry
+        ip_addr = ""
+        notes = ""
+        j = i + 1
+
+        if j < len(lines) and ip_re.search(lines[j]):
+            ip_addr = ip_re.search(lines[j]).group(0)
+            j += 1
+            if j < len(lines) and "No V6 Entry" in lines[j]:
+                notes = "No V6 Entry"
+                j += 1
+
+        rows.append({
+            "Record number": rec_no,
+            "Name/IP address": f"{name} {ip_addr}".strip() + (f" ({notes})" if notes else ""),
+            "Type": "",  # not reliably present in raw format
+            "Reg": reg,
+            "Ack": act,
+            "Translations updated": translations,
+            "Net Rgn": net_rgn
+        })
+
+        i = j
+
+    return rows
+
 
 
 
@@ -1863,6 +1935,11 @@ def get_list_survivable_processor_data():
         try:
             # run command — guard against SSH exceptions or None returns
             try:
+                ip, password = _get_creds_from_request()
+                if not ip or not password:
+                    return jsonify({"error": "Missing IP/password"}), 400
+
+                inject_sat_creds(ip, password)
                 output = run_avaya_command("list survivable-processor")
             except Exception as ssh_err:
                 print("⚠️ SSH/run_avaya_command raised:", ssh_err)
@@ -1955,6 +2032,27 @@ def extract_summary(text):
     return summary
 
 
+
+def normalize_media_gateway_text(text: str) -> str:
+    """
+    Normalize smashed SAT output into a parsable token stream.
+    """
+    if not text:
+        return ""
+
+    # Ensure space before MG numbers
+    text = re.sub(r"(?<!\s)(\d{1,3}\s+\d+\|)", r" \1", text)
+
+    # Ensure space after link state
+    text = re.sub(r"(up|dn)(?=\S)", r"\1 ", text, flags=re.IGNORECASE)
+
+    # Collapse excessive whitespace
+    text = re.sub(r"\s+", " ", text)
+
+    return text
+
+
+
 def parse_gateway_table(text):
     """
     Locate the 'GATEWAY STATUS' section and parse gateway rows.
@@ -2022,6 +2120,11 @@ def get_status_media_gateway():
 
     try:
         start = time.time()
+        ip, password = _get_creds_from_request()
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
         output = run_avaya_command("status media-gateways")
 
 
@@ -2179,6 +2282,11 @@ def get_status_media_processor_all():
         start = time.time()
 
         # ✅ Run the Avaya command
+        ip, password = _get_creds_from_request()
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
         output = run_avaya_command("status media-processor all")
 
 
@@ -2225,6 +2333,8 @@ def get_status_media_processor_all():
             "State",
         ]
 
+        print("This is media processor output", output)
+
         # Build DataFrame from the parser output using matching column names
         parsed_rows = parse_media_processors(output)
         df = pd.DataFrame(parsed_rows, columns=columns)
@@ -2260,131 +2370,60 @@ def get_status_media_processor_all():
         return jsonify({"error": str(e)}), 500
 
 
+# 2 parser functions for aesvcs interface
 
-# parser for aesvcs interface
+def normalize_aesvcs_interface_text(text: str) -> str:
+    if not text:
+        return ""
+
+    # Normalize line breaks
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Insert space between yes/no and number (yes10 → yes 10)
+    text = re.sub(r"\b(yes|no)(\d+)\b", r"\1 \2", text, flags=re.IGNORECASE)
+
+    # Ensure space before status words if smashed
+    text = re.sub(r"(\d)(listening|stopped|down|up)", r"\1 \2", text, flags=re.IGNORECASE)
+
+    # Remove command/footer noise
+    text = re.sub(r"Command\s+successfully.*", "", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bPage\b.*", "", text, flags=re.IGNORECASE)
+
+    # Collapse excessive whitespace
+    text = re.sub(r"\s+", " ", text)
+
+    return text.strip()
+
+
+
+
+
 
 def parse_aesvcs_interface(output):
-    """
-    Parse 'status aesvcs interface' output.
-
-    Strategy:
-    - Normalize newlines.
-    - Find the header line that contains the columns:
-      Local Node   Enabled?   Number of Connections   Status
-    - From the line after that, collect non-empty lines until we hit a footer
-      such as 'Command successfully completed' or another big banner.
-    - For each candidate line, use a forgiving regex to extract fields:
-      ^\s*(\S+)\s+(\S+)\s+(\d+)\s+(\S+)\s*$
-      (local_node, enabled, num_connections, status)
-    - If a line doesn't match exactly, try a token-based fallback.
-    """
-    if not output or not isinstance(output, str):
+    if not output:
         return []
 
-    text = output.replace("\r\n", "\n").replace("\r", "\n")
-    lines = text.split("\n")
+    text = normalize_aesvcs_interface_text(output)
 
-    # Find header line index
-    header_pattern = re.compile(r"Local\s+Node\s+Enabled\?\s+Number\s+of\s+Connections\s+Status", re.IGNORECASE)
-    header_idx = -1
-    for i, ln in enumerate(lines):
-        if header_pattern.search(ln):
-            header_idx = i
-            break
-
-    if header_idx == -1:
-        # header not found: try to find a line that contains "Local Node" as fallback
-        for i, ln in enumerate(lines):
-            if "Local Node" in ln or "LocalNode" in ln:
-                header_idx = i
-                break
-
-    if header_idx == -1:
-        # nothing to parse
-        return []
-
-    # Collect data lines after header
-    data_lines = []
-    footer_re = re.compile(r"Command\s+successfully|press\s+NEXT\s+PAGE|press\s+CANCEL", re.IGNORECASE)
-    for ln in lines[header_idx + 1:]:
-        if not ln or not ln.strip():
-            continue
-        if footer_re.search(ln):
-            break
-        # skip lines that look like page markers
-        if re.match(r"^\s*Page\s+\d+", ln, re.IGNORECASE):
-            continue
-        # skip obvious banner separators
-        if re.match(r"^\s*[-=]{3,}\s*$", ln):
-            continue
-        data_lines.append(ln.rstrip())
+    # Ensure we only parse after the real header
+    m = re.search(r"AE\s+SERVICES\s+INTERFACE\s+STATUS", text, re.IGNORECASE)
+    if m:
+        text = text[m.end():]
 
     rows = []
-    # Primary regex for well-formed lines
-    primary_re = re.compile(r"^\s*(\S+)\s+(\S+)\s+(\d+)\s+(\S+)\s*$")
 
-    for ln in data_lines:
-        m = primary_re.match(ln)
-        if m:
-            local_node = m.group(1)
-            enabled = m.group(2)
-            num_connections = int(m.group(3))
-            status = m.group(4)
-            rows.append({
-                "local_node": local_node,
-                "enabled": enabled,
-                "num_connections": num_connections,
-                "status": status
-            })
-            continue
+    row_re = re.compile(
+        r"\b(\S+)\s+(yes|no)\s+(\d+)\s+(\S+)\b",
+        re.IGNORECASE
+    )
 
-        # Fallback: token split and heuristics (for lines with variable spacing)
-        toks = re.split(r"\s{2,}|\t", ln)  # prefer double-space split which often separates columns
-        if len(toks) >= 4:
-            t0 = toks[0].strip()
-            t1 = toks[1].strip()
-            # Try to find integer token for connections
-            conn = ""
-            stat = ""
-            # tokens after second: search for a token that is purely digits
-            for t in toks[2:]:
-                if re.match(r"^\d+$", t.strip()):
-                    conn = int(t.strip())
-                    # everything after that is status (join)
-                    idx = toks.index(t)
-                    stat = " ".join([x.strip() for x in toks[idx+1:]]).strip() or ""
-                    break
-            if conn == "":
-                # fallback: try splitting by whitespace and pick last token as status
-                pieces = re.split(r"\s+", ln.strip())
-                if len(pieces) >= 4 and pieces[-2].isdigit():
-                    conn = int(pieces[-2])
-                    stat = pieces[-1]
-                else:
-                    # give a gentle best-effort parse
-                    conn = int(pieces[-2]) if len(pieces) >= 2 and pieces[-2].isdigit() else 0
-                    stat = pieces[-1] if pieces else ""
-            rows.append({
-                "local_node": t0,
-                "enabled": t1,
-                "num_connections": int(conn),
-                "status": stat
-            })
-            continue
-
-        # If absolutely nothing matched, attempt a whitespace split fallback
-        toks2 = re.split(r"\s+", ln.strip())
-        if len(toks2) >= 4:
-            try:
-                rows.append({
-                    "local_node": toks2[0],
-                    "enabled": toks2[1],
-                    "num_connections": int(toks2[2]) if toks2[2].isdigit() else 0,
-                    "status": toks2[3]
-                })
-            except Exception:
-                # last resort: skip
-                continue
+    for node, enabled, connections, status in row_re.findall(text):
+        rows.append({
+            "local_node": node,
+            "enabled": enabled.lower(),
+            "num_connections": int(connections),
+            "status": status.lower()
+        })
 
     return rows
 
@@ -2411,6 +2450,11 @@ def get_status_aesvcs_interface():
         print("⚙️ Running Avaya command: status aesvcs interface")
 
         # ✅ Run Avaya command
+        ip, password = _get_creds_from_request()
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
         output = run_avaya_command("status aesvcs interface")
 
         
@@ -2475,105 +2519,78 @@ ROW_RE = re.compile(
     r"(?P<msgs_rcvd>\d+)\s*$"
 )
 
-def parse_aesvcs_link(output):
-    """
-    Parse the 'status aesvcs link' output and return list of row dicts.
-    Steps:
-      - Normalize lines
-      - Locate header line that begins with 'Svc/' (case-insensitive)
-      - From next line parse lines that match ROW_RE until end or next header/footer
-    """
-    if not output:
+
+def normalize_aesvcs_link_text(text: str) -> list[str]:
+    if not text:
         return []
 
-    # Normalize CRLF and split
-    lines = output.replace("\r\n", "\n").replace("\r", "\n").splitlines()
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Find the header line that begins with 'Svc/' (skip everything until that)
-    header_idx = None
-    for i, ln in enumerate(lines):
-        if ln.strip().lower().startswith("svc/"):
-            header_idx = i
-            break
+    # Fix smashed fields
+    text = re.sub(r"(\d{2}/\d{2})([A-Za-z])", r"\1 \2", text)   # 12/01inc → 12/01 inc
+    text = re.sub(r"(\d{4,5})(procr)", r"\1 \2", text)         # 52864procr → 52864 procr
 
-    if header_idx is None:
-        # Try some fallback: look for 'Link  Server' or 'AE Services' header
-        for i, ln in enumerate(lines):
-            if "AE Services" in ln and "Remote IP" in ln:
-                header_idx = i
-                break
-
-    # If still not found - nothing to parse
-    if header_idx is None:
-        return []
-
-    # Data begins from the line after the header (skip header and header-underlines)
-    start = header_idx + 1
-    # Skip a possible second header line (like the "Link  Server" line). Move start forward
-    # until we hit a line that looks like data (starts with a token like NN/NN or digits)
-    while start < len(lines):
-        test = lines[start].strip()
-        # break if test looks like a data row start (e.g. "12/01" or "9/08" or similar)
-        if re.match(r"^\d+/\d+\b", test) or ROW_RE.match(test):
-            break
-        start += 1
-
-    parsed = []
-    for ln in lines[start:]:
+    # Remove banners, pages, footers
+    cleaned = []
+    for ln in text.splitlines():
         s = ln.strip()
         if not s:
             continue
-        # stop on page/footer markers
-        low = s.lower()
-        if low.startswith("press") or low.startswith("page") or low.startswith("#") or "command" in low:
+        if re.search(r"AE SERVICES LINK STATUS", s, re.I):
             continue
-        m = ROW_RE.match(s)
-        if m:
-            parsed.append({
-                "svc_link": m.group("svc_link"),
-                "aes_server": m.group("aes_server"),
-                "remote_ip": m.group("remote_ip"),
-                "remote_port": int(m.group("remote_port")),
-                "local_node": m.group("local_node"),
-                "msgs_sent": int(m.group("msgs_sent")),
-                "msgs_rcvd": int(m.group("msgs_rcvd")),
-            })
-        else:
-            # not matched — sometimes server names contain dashes or other chars, or remote_ip might be missing.
-            # attempt a more permissive parse: split tokens and try to map expected fields
-            # tokenization fallback:
-            toks = re.split(r"\s+", s)
-            # require at least 7 tokens for fallback
-            if len(toks) >= 7:
-                # last two tokens are msgs_sent and msgs_rcvd if they are digits
-                if toks[-1].isdigit() and toks[-2].isdigit():
-                    msgs_rcvd = int(toks[-1])
-                    msgs_sent = int(toks[-2])
-                    local_node = toks[-3]
-                    remote_port = toks[-4]
-                    remote_ip = toks[-5]
-                    aes_server = toks[-6]
-                    svc_link = toks[-7]
-                    # only accept if remote_ip looks like IP and remote_port digits
-                    if re.match(r"^\d{1,3}(?:\.\d{1,3}){3}$", remote_ip) and remote_port.isdigit():
-                        parsed.append({
-                            "svc_link": svc_link,
-                            "aes_server": aes_server,
-                            "remote_ip": remote_ip,
-                            "remote_port": int(remote_port),
-                            "local_node": local_node,
-                            "msgs_sent": msgs_sent,
-                            "msgs_rcvd": msgs_rcvd,
-                        })
-                    else:
-                        # otherwise skip
-                        continue
-                else:
-                    continue
-            else:
-                continue
+        if s.lower().startswith(("page", "press", "command")):
+            continue
+        if re.search(r"Srvr/|AE Services|Remote IP|Msgs", s):
+            continue
+        cleaned.append(s)
 
-    return parsed
+    return cleaned
+
+
+
+
+
+def parse_aesvcs_link(output):
+    """
+    Robust parser for smashed SAT output of:
+    status aesvcs link
+    """
+    lines = normalize_aesvcs_link_text(output)
+
+    rows = []
+    i = 0
+
+    # Line-1 pattern (everything except remote IP)
+    line1_re = re.compile(
+        r"^(\d+/\d+)\s+(\S+)\s+(\d+)\s+(\S+)\s+(\d+)\s+(\d+)$"
+    )
+
+    ip_re = re.compile(r"^\d{1,3}(?:\.\d{1,3}){3}$")
+
+    while i < len(lines) - 1:
+        m = line1_re.match(lines[i])
+        if not m:
+            i += 1
+            continue
+
+        # Next line MUST be the IP
+        if not ip_re.match(lines[i + 1]):
+            i += 1
+            continue
+
+        rows.append({
+            "svc_link": m.group(1),
+            "aes_server": m.group(2),
+            "remote_port": int(m.group(3)),
+            "local_node": m.group(4),
+            "msgs_sent": int(m.group(5)),
+            "msgs_rcvd": int(m.group(6)),
+            "remote_ip": lines[i + 1],
+        })
+
+        i += 2
+
+    return rows
 
 
 
@@ -2593,6 +2610,12 @@ def get_status_aesvcs_link():
     try:
         start = time.time()
         print("⚙️ Running Avaya command: status aesvcs link")
+
+        ip, password = _get_creds_from_request()
+        if not ip or not password:
+            return jsonify({"error": "Missing IP/password"}), 400
+
+        inject_sat_creds(ip, password)
 
         output = run_avaya_command("status aesvcs link")
 
@@ -2660,86 +2683,82 @@ def get_status_aesvcs_link():
 
 
 # parser - CDR Link
+def normalize_cdr_text(text: str) -> str:
+    if not text:
+        return ""
+
+    text = text.replace("\r\n", "\n").replace("\r", "\n")
+
+    # Remove junk / banners
+    text = re.sub(r"status\s+cdr-link.*", "", text, flags=re.I)
+    text = re.sub(r"Page\s+\d+.*", "", text, flags=re.I)
+    text = re.sub(r"Command:.*", "", text, flags=re.I)
+
+    # Fix smashed timestamps
+    text = re.sub(
+        r"(\d{4}/\d{2}/\d{2})(\d{2}:\d{2}:\d{2})",
+        r"\1 \2",
+        text
+    )
+
+    # Normalize whitespace
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
 def parse_cdr_link_section(output):
-    start = time.time()
+    text = normalize_cdr_text(output)
 
-    # Normalize spacing but keep long gaps that indicate column gap
-    section = output or ""
-    section = section.replace("\t", " ")
-    section = re.sub(r"\r\n", "\n", section)
-    # collapse repeated blank lines to single newline
-    section = re.sub(r"\n{2,}", "\n\n", section).strip()
+    # ---- PATTERN EXTRACTION ----
+    link_states = re.findall(r"\b(up|down)\b", text, re.IGNORECASE)
 
-    # Remove footer/noise tokens (keep content safe)
-    section = re.sub(r"(?i)press\s+CANCEL.*", "", section)
-    section = re.sub(r"(?i)command\s+successfully.*", "", section)
-    section = section.strip()
+    datetimes = re.findall(
+        r"\d{4}/\d{2}/\d{2}\s\d{2}:\d{2}:\d{2}", text
+    )
 
-    expected = [
-        "Link State",
-        "Date & Time",
-        "Forward Seq. No",
-        "Backward Seq. No",
-        "CDR Buffer % Full",
-        "Reason Code"
+    decimals = re.findall(r"\b\d+\.\d+\b", text)
+
+    integers = [i for i in re.findall(r"\b\d+\b", text) if len(i) <= 6]
+
+    reason_codes = re.findall(r"\b[A-Z]{2,}\b", text)
+
+    # ---- SAFE PICKING (Primary / Secondary) ----
+    def pick(lst, idx):
+        return lst[idx] if len(lst) > idx else ""
+
+    rows = [
+        {
+            "Parameter": "Link State",
+            "Primary": pick(link_states, 0),
+            "Secondary": pick(link_states, 1),
+        },
+        {
+            "Parameter": "Date & Time",
+            "Primary": pick(datetimes, 0),
+            "Secondary": pick(datetimes, 1),
+        },
+        {
+            "Parameter": "Forward Seq. No",
+            "Primary": pick(integers, 0),
+            "Secondary": pick(integers, 1),
+        },
+        {
+            "Parameter": "Backward Seq. No",
+            "Primary": pick(integers, 2),
+            "Secondary": pick(integers, 3),
+        },
+        {
+            "Parameter": "CDR Buffer % Full",
+            "Primary": pick(decimals, 0),
+            "Secondary": pick(decimals, 1),
+        },
+        {
+            "Parameter": "Reason Code",
+            "Primary": pick(reason_codes, 0),
+            "Secondary": pick(reason_codes, 1),
+        },
     ]
 
-    # Find positions of each label so we can extract the chunk reliably
-    positions = {}
-    for label in expected:
-        m = re.search(re.escape(label) + r"\s*:", section, re.IGNORECASE)
-        positions[label] = m.start() if m else -1
-
-    present = [(lbl, pos) for lbl, pos in positions.items() if pos >= 0]
-    if not present:
-        raise ValueError("Could not detect expected labels in CDR LINK STATUS output")
-
-    present.sort(key=lambda x: x[1])
-
-    # Extract chunk for each label (text from label to next label)
-    label_chunks = {}
-    for i, (label, pos) in enumerate(present):
-        start_pos = pos
-        end_pos = present[i+1][1] if i+1 < len(present) else len(section)
-        chunk = section[start_pos:end_pos].strip()
-        # remove the label and colon
-        chunk = re.sub(re.escape(label) + r"\s*:\s*", "", chunk, flags=re.IGNORECASE).strip()
-        label_chunks[label] = chunk
-
-    # Now for each chunk normalize internal whitespace and split by multiple spaces as column separator
-    def split_primary_secondary(chunk_text):
-        """
-        Return (primary, secondary) from a chunk.
-        Approach:
-          - Replace newlines with single space
-          - Replace runs of 2+ spaces with a separator token '|||'
-          - Split on token: left -> primary, right -> secondary (strip)
-        """
-        if not chunk_text or chunk_text.strip() == "":
-            return "", ""
-        # collapse internal multiple newlines/spaces, but preserve "2+ spaces" boundary
-        one_line = re.sub(r"\s*\n\s*", " ", chunk_text).strip()
-        # replace repeated spaces (2 or more) with a token
-        tokened = re.sub(r" {2,}", " ||| ", one_line)
-        parts = [p.strip() for p in tokened.split("|||")]
-        # parts may have surrounding separators; clean them
-        parts = [p for p in parts if p is not None]
-        # After split, primary should be first non-empty, secondary the next non-empty
-        primary = parts[0].strip() if len(parts) >= 1 else ""
-        secondary = parts[1].strip() if len(parts) >= 2 else ""
-        return primary, secondary
-
-    rows = []
-    for label in expected:
-        chunk = label_chunks.get(label, "")
-        primary, secondary = split_primary_secondary(chunk)
-        # Final cleanups
-        primary = primary.strip()
-        secondary = secondary.strip()
-        rows.append({"Parameter": label, "Primary": primary, "Secondary": secondary})
-
-    df = pd.DataFrame(rows, columns=["Parameter", "Primary", "Secondary"])
-    duration = round(time.time() - start, 2)
     return rows
 
 
@@ -2756,6 +2775,11 @@ def get_status_cdr_link():
 
         # --- RUN AVAYA COMMAND SAFELY ---
         try:
+            ip, password = _get_creds_from_request()
+            if not ip or not password:
+                return jsonify({"error": "Missing IP/password"}), 400
+
+            inject_sat_creds(ip, password)
             output = run_avaya_command("status cdr-link")
     
         except Exception as ee:
@@ -2791,7 +2815,7 @@ def get_status_cdr_link():
         # 📌 USE THE NEW ROBUST PARSER (same logic as test_status_cdr_link_fixed.py)
         # ----------------------------------------------------------------------
 
-        print("Output is",parse_cdr_link_section(output))
+        print("Output is",output)
         columns = ["Parameter", "Primary", "Secondary"]
         df = pd.DataFrame(parse_cdr_link_section(output=output), columns=columns)
 
