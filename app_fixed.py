@@ -18,6 +18,7 @@ from monitor_traffic_trunk_groups import run_monitor_traffic_trunk_groups, parse
 from status_trunk import run_status_trunk_all, run_status_trunk, parse_status_trunk
 
 import csv
+import html
 
 import re
 
@@ -1833,82 +1834,83 @@ def get_status_aesvcs_cti_link():
 
 
 # Parser - Survivable Processor
-def parse_survivable_processor_output(output):
+def parse_survivable_processor_output(output: str):
     if not output:
         return []
 
-    lines = [ln.strip() for ln in output.splitlines() if ln.strip()]
     rows = []
+    lines = [l.rstrip() for l in output.splitlines() if l.strip()]
+
     i = 0
-
-    ip_re = re.compile(r"\b\d{1,3}(?:\.\d{1,3}){3}\b")
-
     while i < len(lines):
         line = lines[i]
 
-        # Skip noise
-        if (
-            "SURVIVABLE" in line.upper()
-            or "Record Name" in line
-            or "press" in line.lower()
-            or "page" in line.lower()
-        ):
+        # 🚫 Skip headers, page lines, junk
+        if re.search(r"(SURVIVABLE|Page|Record|Number|press)", line, re.I):
             i += 1
             continue
 
-        # Record header must start with number
-        if not re.match(r"^\d+\s+", line):
+        # ✅ Must start with record number + name
+        m = re.match(r"^\s*(\d+)\s+([A-Za-z0-9\-]+)\s+(.*)$", line)
+        if not m:
             i += 1
             continue
 
-        # Example:
-        # 1 Bhubneshwar-LSPLSP yn16:35 12/11/2025 24
-        tokens = re.split(r"\s+", line)
+        rec_no = m.group(1)
+        name = m.group(2)
+        tail = m.group(3)
 
-        rec_no = tokens[0]
-        name = tokens[1]
-        rest = " ".join(tokens[2:])
-
-        # Reg/Act may be merged (yn / yy / nn)
-        reg, act = "", ""
-        m = re.search(r"\b([ynYN])\s*([ynYN])\b", rest)
-        if m:
-            reg, act = m.group(1).lower(), m.group(2).lower()
-            rest = rest.replace(m.group(0), "").strip()
-
-        # Extract timestamp + date if present
-        ts_match = re.search(r"\d{1,2}:\d{2}\s+\d{1,2}/\d{1,2}/\d{4}", rest)
-        translations = ts_match.group(0) if ts_match else ""
-
-        # Net Rgn is usually last number
+        # ---- Defaults ----
+        type_ = ""
+        reg = ""
+        ack = ""
+        translations = ""
         net_rgn = ""
-        m = re.search(r"\b(\d+)$", rest)
-        if m:
-            net_rgn = m.group(1)
 
-        # Look ahead for IP + No V6 Entry
-        ip_addr = ""
-        notes = ""
-        j = i + 1
+        # ---- Extract timestamp ----
+        ts = re.search(r"(\d{2}:\d{2})\s+(\d{2}/\d{2}/\d{4})", tail)
+        if ts:
+            translations = f"{ts.group(1)} {ts.group(2)}"
 
-        if j < len(lines) and ip_re.search(lines[j]):
-            ip_addr = ip_re.search(lines[j]).group(0)
-            j += 1
-            if j < len(lines) and "No V6 Entry" in lines[j]:
-                notes = "No V6 Entry"
-                j += 1
+        # ---- Extract Reg/Ack glued to time (yn16:35, Syn16:35 etc) ----
+        ra = re.search(r"\b([yYnN])([yYnN])\d{2}:\d{2}", tail)
+        if ra:
+            reg = ra.group(1).lower()
+            ack = ra.group(2).lower()
+
+        # ---- Extract Type safely ----
+        # Type is the FIRST standalone word before reg/ack/time
+        tokens = tail.split()
+        if tokens:
+            if tokens[0].isalpha() and not re.match(r"[ynYN]\d{2}:\d{2}", tokens[0]):
+                type_ = tokens[0]
+
+        # ---- Extract Net Region (last number) ----
+        net = re.search(r"\b(\d+)\b\s*$", tail)
+        if net:
+            net_rgn = net.group(1)
+
+        # ---- Next line: IP ----
+        ip = ""
+        if i + 1 < len(lines) and re.match(r"\d+\.\d+\.\d+\.\d+", lines[i + 1]):
+            ip = lines[i + 1].strip()
+            i += 1
+
+        # ---- Optional No V6 Entry ----
+        if i + 1 < len(lines) and "No V6 Entry" in lines[i + 1]:
+            i += 1
 
         rows.append({
             "Record number": rec_no,
-            "Name/IP address": f"{name} {ip_addr}".strip() + (f" ({notes})" if notes else ""),
-            "Type": "",  # not reliably present in raw format
+            "Name/IP address": f"{name} {ip}".strip(),
+            "Type": type_,
             "Reg": reg,
-            "Ack": act,
+            "Ack": ack,
             "Translations updated": translations,
             "Net Rgn": net_rgn
         })
 
-        i = j
+        i += 1
 
     return rows
 
@@ -2006,8 +2008,10 @@ def get_list_survivable_processor_data():
 
 # 3 functions to parse Media gateways command
 
-GATEWAY_CHUNK_RE = re.compile(r"\b(\d{1,3})\s+(\d+)\s+(\d+)\s+(\d+)\s+([A-Za-z]+)\b")
-
+GATEWAY_CHUNK_RE = re.compile(
+    r"(?<!\d)(\d{1,3})\s+(\d+)\|\s*(\d+)\|\s*([0-9*]+)\|\s*(up|dn)",
+    re.IGNORECASE
+)
 
 def extract_summary(text):
     """
@@ -2034,19 +2038,13 @@ def extract_summary(text):
 
 
 def normalize_media_gateway_text(text: str) -> str:
-    """
-    Normalize smashed SAT output into a parsable token stream.
-    """
     if not text:
         return ""
-
-    # Ensure space before MG numbers
-    text = re.sub(r"(?<!\s)(\d{1,3}\s+\d+\|)", r" \1", text)
 
     # Ensure space after link state
     text = re.sub(r"(up|dn)(?=\S)", r"\1 ", text, flags=re.IGNORECASE)
 
-    # Collapse excessive whitespace
+    # Collapse whitespace
     text = re.sub(r"\s+", " ", text)
 
     return text
@@ -2687,44 +2685,63 @@ def normalize_cdr_text(text: str) -> str:
     if not text:
         return ""
 
+    # Decode HTML entities
+    text = html.unescape(text)
+
+    # Normalize line breaks
     text = text.replace("\r\n", "\n").replace("\r", "\n")
 
-    # Remove junk / banners
-    text = re.sub(r"status\s+cdr-link.*", "", text, flags=re.I)
+    # Remove banners, page junk, logs
+    text = re.sub(r"^\s*\d*status\s+cdr-link.*$", "", text, flags=re.I | re.M)
+
     text = re.sub(r"Page\s+\d+.*", "", text, flags=re.I)
     text = re.sub(r"Command:.*", "", text, flags=re.I)
+    text = re.sub(r"POST\s+/get-status-cdr-link.*", "", text, flags=re.I)
 
-    # Fix smashed timestamps
+    # 🔴 FIX BROKEN LABELS
+    text = re.sub(r"Forw\s*ard", "Forward", text, flags=re.I)
+    text = re.sub(r"Back\s*ward", "Backward", text, flags=re.I)
+
+    # 🔴 FIX BROKEN TIME (08:49 :51 → 08:49:51)
+    text = re.sub(r"(\d{2}:\d{2})\s*:\s*(\d{2})", r"\1:\2", text)
+
+    # 🔴 FIX BROKEN DATE+TIME (0708:49 → 07 08:49)
     text = re.sub(
         r"(\d{4}/\d{2}/\d{2})(\d{2}:\d{2}:\d{2})",
         r"\1 \2",
         text
     )
 
-    # Normalize whitespace
+    # Normalize whitespace LAST
     text = re.sub(r"\s+", " ", text).strip()
+
     return text
+
+
 
 
 def parse_cdr_link_section(output):
     text = normalize_cdr_text(output)
+    print("NORMALIZED TEXT:\n", text)
 
-    # ---- PATTERN EXTRACTION ----
-    link_states = re.findall(r"\b(up|down)\b", text, re.IGNORECASE)
 
-    datetimes = re.findall(
-        r"\d{4}/\d{2}/\d{2}\s\d{2}:\d{2}:\d{2}", text
-    )
+    def grab(pattern):
+        return re.findall(pattern, text, re.IGNORECASE)
 
-    decimals = re.findall(r"\b\d+\.\d+\b", text)
+    link_states = re.findall(
+    r"(?:Link\s+)?State\s*:\s*(up|down)",
+    text,
+    re.IGNORECASE
+)
 
-    integers = [i for i in re.findall(r"\b\d+\b", text) if len(i) <= 6]
+    datetimes = grab(r"Date\s*&?\s*Time:\s*(\d{4}/\d{2}/\d{2}\s\d{2}:\d{2}:\d{2})")
+    forward_seq = grab(r"Forward Seq\. No:\s*(\d+)")
+    backward_seq = grab(r"Backward Seq\. No:\s*(\d+)")
+    buffer_full = grab(r"CDR Buffer % Full:\s*([\d.]+)")
+    reason_codes = grab(r"Reason Code:\s*([A-Z]+)")
 
-    reason_codes = re.findall(r"\b[A-Z]{2,}\b", text)
-
-    # ---- SAFE PICKING (Primary / Secondary) ----
-    def pick(lst, idx):
-        return lst[idx] if len(lst) > idx else ""
+    def pick(lst, i):
+        return lst[i] if len(lst) > i else ""
 
     rows = [
         {
@@ -2739,18 +2756,18 @@ def parse_cdr_link_section(output):
         },
         {
             "Parameter": "Forward Seq. No",
-            "Primary": pick(integers, 0),
-            "Secondary": pick(integers, 1),
+            "Primary": pick(forward_seq, 0),
+            "Secondary": pick(forward_seq, 1),
         },
         {
             "Parameter": "Backward Seq. No",
-            "Primary": pick(integers, 2),
-            "Secondary": pick(integers, 3),
+            "Primary": pick(backward_seq, 0),
+            "Secondary": pick(backward_seq, 1),
         },
         {
             "Parameter": "CDR Buffer % Full",
-            "Primary": pick(decimals, 0),
-            "Secondary": pick(decimals, 1),
+            "Primary": pick(buffer_full, 0),
+            "Secondary": pick(buffer_full, 1),
         },
         {
             "Parameter": "Reason Code",
@@ -2758,6 +2775,8 @@ def parse_cdr_link_section(output):
             "Secondary": pick(reason_codes, 1),
         },
     ]
+
+
 
     return rows
 
